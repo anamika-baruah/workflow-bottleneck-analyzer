@@ -1,13 +1,19 @@
 """
-src/context_analyzer.py
+context_analyzer.py
 
-Identifies the industry and operational context (human vs system) for a given workflow log.
+Figures out what kind of workflow we're looking at and which steps
+are handled by humans vs. automated systems.
 """
 
 import pandas as pd
 
+
 def detect_workflow_context(df: pd.DataFrame) -> dict:
-    """Identify workflow industry, human-involved steps, and system-driven steps."""
+    """Classify the workflow type and split tasks into human vs system.
+
+    Uses keyword matching on task names — not perfect but covers the
+    most common workflow patterns we've seen.
+    """
     if df.empty or "task" not in df.columns or "user" not in df.columns:
         return {
             "workflow_type": "Unknown",
@@ -17,8 +23,8 @@ def detect_workflow_context(df: pd.DataFrame) -> dict:
 
     unique_tasks = df["task"].unique()
     task_str = " ".join(unique_tasks).lower()
-    
-    # 1. Detect Workflow Type
+
+    # keyword-based workflow classification — add more patterns as needed
     if any(k in task_str for k in ["lead", "proposal", "deal"]):
         w_type = "Sales Workflow"
     elif any(k in task_str for k in ["ticket", "support", "incident"]):
@@ -27,19 +33,18 @@ def detect_workflow_context(df: pd.DataFrame) -> dict:
         w_type = "Employee Onboarding Workflow"
     else:
         w_type = "Generic Business Workflow"
-        
-    # 2. Divide tasks by human vs system
+
+    # split tasks by whether they're always run by "system" user
     human_tasks = []
     system_tasks = []
-    
+
     for task in unique_tasks:
-        # Check if this task is primarily performed by a non-system user
         users = df.loc[df["task"] == task, "user"].unique()
         if len(users) == 1 and users[0].lower() == "system":
             system_tasks.append(task)
         else:
             human_tasks.append(task)
-            
+
     return {
         "workflow_type": w_type,
         "human_tasks": sorted(human_tasks),

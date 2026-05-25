@@ -1,6 +1,7 @@
 # 🚀 AI Workflow Intelligence System
 
-> **Turn raw workflow logs into actionable business decisions using AI-driven process intelligence.**
+> **Turn raw workflow logs into actionable business decisions using 
+> AI-driven process intelligence.**
 
 [![Python](https://img.shields.io/badge/Python-3.9+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-FF4B4B?style=flat-square&logo=streamlit&logoColor=white)](https://streamlit.io)
@@ -12,15 +13,24 @@
 
 ## 📌 Overview
 
-Most businesses run on complex, multi-step workflows — Sales pipelines, Support queues, HR onboarding — but as volume scales, **it becomes impossible to know where time is being lost.**
+Most businesses run on complex, multi-step workflows — sales pipelines,
+support queues, HR onboarding — but as volume scales, it becomes
+impossible to know where time is being lost, which paths are deviating
+from standard, and what fixing the worst offenders is actually worth.
 
-The **AI Workflow Intelligence System** is an operations intelligence and decision-support platform that automatically ingests raw workflow event logs and surfaces the insights that matter most:
+The **AI Workflow Intelligence System** is an operations intelligence
+and decision-support platform that automatically ingests raw workflow
+event logs and surfaces the insights that matter most:
 
 - *Which step is creating the most delay?*
+- *How many distinct workflow paths exist — and what does each one cost?*
 - *Is the bottleneck caused by workload or just waiting in a queue?*
-- *What's the fastest, highest-ROI fix?*
+- *What is the recoverable operational waste if we fix the worst path?*
 
-Rather than building another metrics dashboard, this system acts as a **strategic analytical layer** — translating raw operational data into structured, boardroom-ready decisions. It moves your team from reactive firefighting to proactive, evidence-based optimization.
+Rather than building another metrics dashboard, this system acts as a
+**strategic analytical layer** — translating raw operational data into
+structured, boardroom-ready decisions. It moves teams from reactive
+firefighting to proactive, evidence-based optimization.
 
 ---
 
@@ -33,12 +43,16 @@ Most analytics tools stop at visualization. This system goes further:
 | Shows *what* happened | Explains *why* it happened |
 | Displays metrics | Prescribes specific actions |
 | Reports the past | Predicts future risks |
-| Requires manual interpretation | Generates structured decision chains |
+| Treats all cases the same | Discovers hidden workflow variants |
+| Requires manual interpretation | Quantifies recoverable waste in hours |
 
-- 🔍 **Not just visualization** — it diagnoses the root cause behind every delay
-- 🎯 **Suggests exactly what to do** — with a Problem → Cause → Action → Impact decision chain
-- 💰 **Quantifies business impact** — so you can justify every optimization decision with data
-- ⚠️ **Predicts risks before they happen** — using statistical variability analysis across task patterns
+- 🔍 **Not just visualization** — diagnoses root causes behind every delay
+- 🎯 **Prescribes exactly what to do** — Problem → Cause → Action → Impact
+- 💰 **Quantifies business impact** — recoverable hours, SLA risk, cycle cost
+- 🔀 **Discovers hidden process variants** — finds every path your cases 
+  actually follow, not just the one they're supposed to
+- ⚠️ **Predicts risks before they happen** — using statistical variability 
+  analysis across task patterns
 
 👉 *Acts like a mini operations consultant, not just an analytics tool.*
 
@@ -48,52 +62,101 @@ Most analytics tools stop at visualization. This system goes further:
 
 In any modern enterprise, operational efficiency quietly erodes due to:
 
-- **Invisible Bottlenecks** — A single approval step (like "Manager Review") can silently consume 60%+ of total process time without anyone noticing until it impacts revenue.
-- **Zero Visibility into Idle Time** — There's no easy way to distinguish between *active human work* and time a task simply spends sitting in a queue waiting to be picked up.
-- **Approval Bottlenecks That Don't Scale** — Manual verification and sign-off processes that worked at 100 cases/month break completely at 10,000.
-- **Process Deviations Going Undetected** — Tasks being skipped, repeated unnecessarily ("rework loops"), or executed out of sequence create hidden quality and compliance risks.
-- **No Predictive Layer** — Teams only discover a process is failing *after* SLAs are already breached, not before.
+- **Invisible Bottlenecks** — A single approval step can silently consume
+  60%+ of total process time without anyone noticing until it impacts revenue.
+- **Zero Visibility into Idle Time** — No easy way to distinguish between
+  active human work and time a task spends sitting in a queue.
+- **Process Deviations Going Undetected** — Tasks being skipped, repeated
+  unnecessarily (rework loops), or executed out of sequence create hidden
+  quality and compliance risks.
+- **No Cost Attached to Deviations** — Teams know deviations exist but
+  can't answer: *how many hours are we losing to this specific path?*
+- **No Predictive Layer** — Teams only discover a process is failing
+  *after* SLAs are already breached, not before.
 
-These aren't edge cases. They're the silent drains on efficiency in every operations, sales, and support team — and they're largely invisible without the right tooling.
+These aren't edge cases. They're the silent drains on efficiency in every
+operations, sales, and support team — and they're largely invisible
+without the right tooling.
 
 ---
 
 ## 💡 Solution
 
-This system provides a high-fidelity diagnostic and decision engine for any business process:
+A high-fidelity diagnostic and decision engine for any business process:
 
-- **Pinpoints the Exact Bottleneck** — Identifies which specific task in the workflow is the primary constraint, with precise time data.
-- **Decodes Root Causes** — Determines whether a delay is from *task complexity* (hard work) or *queue time* (pure waiting), which leads to completely different fixes.
-- **Structured Decision Chains** — Every insight is delivered in a clear **Problem → Cause → Action → Expected Impact** format — no ambiguity, just clear next steps.
-- **Automation Roadmap** — Identifies which steps are candidates for RPA or rule-based automation, with estimated time savings per recommendation.
-- **Risk Prediction** — Flags tasks with high statistical variability as future failure points *before* they breach SLAs, using a transparent 0–100 risk score.
+- **Pinpoints the Exact Bottleneck** — Identifies which task is the
+  primary constraint, with precise time and percentage-of-workflow data.
+- **Mines Process Variants** — Discovers every unique sequence of steps
+  cases actually follow, classifies each as conformant, rework loop, skip,
+  or extended, and scores them on cycle time, SLA breach rate, and wait ratio.
+- **Quantifies Recoverable Waste** — Calculates total hours that could be
+  reclaimed if deviant paths were standardized to the optimal sequence.
+- **Decodes Root Causes** — Determines whether delay comes from task
+  complexity or queue time, which lead to completely different fixes.
+- **Automation Roadmap** — Identifies candidates for RPA or rule-based
+  automation with estimated time savings per recommendation.
+- **Risk Prediction** — Flags tasks with high statistical variability as
+  future failure points before they breach SLAs, using a transparent
+  0–100 risk score.
 
 ---
 
 ## 🎯 Why This Project Matters
 
-Operational inefficiency is a massive, hidden cost center for every company at scale. Research consistently shows that organizations lose 20–30% of revenue annually to broken or inefficient processes. The challenge isn't a lack of data — it's the lack of a system to interpret that data and translate it into action.
+Operational inefficiency is a massive, hidden cost center. Research
+consistently shows organizations lose 20–30% of revenue annually to
+broken or inefficient processes. The challenge isn't a lack of data —
+it's the lack of a system to interpret that data and translate it into
+action.
 
-This project simulates exactly the kind of tooling modern operations, RevOps, and business intelligence teams are investing in:
+What separates this system from a standard analytics project is the
+**Process Variant Mining engine** — a capability that tools like
+Celonis, ProcessMaker, and Signavio charge enterprise prices to provide.
+This project builds a version from scratch, on a simple CSV, with full
+explainability at every step.
 
-- Replacing manual process audits with automated analysis
-- Giving managers the *why* behind performance drops, not just the *what*
-- Creating a feedback loop between process data and continuous improvement
-
-👉 *Simulates real-world operational intelligence systems used in modern companies.*
+👉 *Simulates real-world operational intelligence used in modern 
+RevOps, BPM, and process excellence teams.*
 
 ---
 
 ## ⚙️ Features
 
-- ⚡ **Bottleneck Detection** — Real-time identification of the primary process constraint, ranked by total time consumed and case volume.
-- ⏱️ **SLA Compliance Analysis** — Monitors performance against defined Service Level Agreements (e.g., Lead Review < 30 mins) and surfaces breach patterns.
-- ⏳ **Waiting vs. Processing Time Breakdown** — Statistical separation of active work time from idle queue time — the key to knowing *where* to intervene.
-- ⚠️ **Exception Flow Detection** — Automated discovery of rework loops (repeated tasks) and sequence deviations (steps executed out of order).
-- 📊 **Workflow Health Score (0–100)** — An executive-ready composite metric with AI-driven explainability detailing exactly which factors are driving the score up or down.
-- ⚙️ **Automation Opportunities** — Targeted recommendations for process automation with estimated ROI and time-reduction impact per suggestion.
-- 🧠 **Smart Insights Engine** — Decision blocks linking each operational problem directly to its root cause, recommended action, and expected business impact.
-- 🎯 **Risk Prediction** — Transparent 0–100 risk scores per task with plain-language explanations of the contributing risk factors.
+### Core Analytics
+- ⚡ **Bottleneck Detection** — Identifies the primary process constraint
+  ranked by total time consumed and case volume, with impact percentage.
+- ⏱️ **SLA Compliance Analysis** — Monitors performance against defined
+  SLAs and surfaces breach patterns by task and case.
+- ⏳ **Waiting vs. Processing Time Breakdown** — Statistical separation
+  of active work time from idle queue time.
+- ⚠️ **Exception Flow Detection** — Automated discovery of rework loops
+  and sequence deviations.
+- 📊 **Workflow Health Score (0–100)** — Executive-ready composite metric
+  with AI-driven explainability detailing which factors drive the score.
+- ⚙️ **Automation Opportunities** — Targeted recommendations with
+  estimated ROI and time-reduction impact per suggestion.
+- 🎯 **Risk Prediction** — Transparent 0–100 risk scores per task with
+  plain-language explanations of contributing risk factors.
+
+### Process Variant Mining (New)
+- 🔀 **Variant Discovery** — Automatically groups cases by the sequence
+  of steps they actually followed and labels each unique path as a variant.
+- 🏷️ **Variant Classification** — Tags each variant as Conformant,
+  Rework Loop, Skip, or Extended with a drift indicator showing how many
+  steps it deviates from the standard path.
+- 💸 **Waste Quantification** — Calculates recoverable hours per variant:
+  how much time would be reclaimed if every deviant case followed the
+  optimal path.
+- 📉 **Variant Scoring** — Scores every path on avg cycle time, SLA
+  breach rate, and wait ratio so you can prioritize which deviation to
+  fix first.
+- 🧠 **Business Insight Generator** — Produces three runtime-computed
+  insights: conformance rate with extra hours per deviant case, total
+  recoverable waste hours from rework, and SLA risk concentration by
+  variant type.
+- ⚡ **Smart Warning Engine** — Identifies the highest-risk deviant path
+  using a normalized combined risk score and generates a forward-looking
+  estimate of hours recovered if that path is fixed.
 
 ---
 
@@ -101,7 +164,7 @@ This project simulates exactly the kind of tooling modern operations, RevOps, an
 
 **Simple View:**
 ```
-Upload Workflow CSV  →  System Analyzes  →  Dashboard Surfaces Insights  →  You Take Action
+Upload Workflow CSV  →  System Analyzes  →  Surface Variants + Bottlenecks →  Quantifies Waste  →  You Take Action
 ```
 
 **Detailed Pipeline:**
@@ -111,11 +174,13 @@ Upload Workflow CSV  →  System Analyzes  →  Dashboard Surfaces Insights  →
         ↓
 🔧 Preprocessing           Timestamp cleaning, duration calculation, waiting-time simulation
         ↓
+🔀 Variant Mining        Fingerprint each case → group into variants → classify + score
+        ↓
 🔬 Discovery & Analysis    SLA compliance, bottleneck severity, variability scoring, exception detection
         ↓
-🧠 Strategic Synthesis     AI layer converts metrics into structured insights and health scores
+🧠 Strategic Synthesis     Waste Quantification, recovery estimates, risk prediction
         ↓
-📊 Streamlit Dashboard     Multi-page executive interface with interactive Plotly visualizations
+📊 Streamlit Dashboard     Multi-tab executive interface with interactive Plotly visualizations
 ```
 
 Each stage is modular and independently testable, making the system easy to extend with new analysis engines or data sources.
@@ -135,28 +200,33 @@ Each stage is modular and independently testable, making the system easy to exte
 ![Smart Insights](assets/insights.png)
 *Detailed AI-driven insights with Problem-Cause-Action-Impact chains.*
 
----
-
-## 🌐 Live Demo
-
-Live demo coming soon. The application can currently be run locally using Streamlit.
 
 ---
 
 ## 📊 Example Insights
 
-Here's the kind of output the system produces from real workflow data:
-
 **🔴 Bottleneck Alert**
-> `"Manager Approval"` consumes an average of **707 minutes** per case — accounting for **63% of total workflow time**. Primary driver: queue wait time, not task complexity.
+> `Manager Approval` consumes an average of **707 minutes** per case —
+> accounting for **63% of total workflow time**. Primary driver: queue
+> wait time, not task complexity.
 
-**⚙️ Automation Recommendation**
-> *"Introduce rule-based auto-approval for low-risk cases under a defined threshold."*
-> Expected Impact: **~25% reduction in end-to-end cycle time.**
+**🔀 Variant Intelligence**
+> **3 distinct workflow paths detected** across 100 cases.
+> Variant B (Rework Loop) affects 23 cases and adds **8.4 extra hours**
+> per case vs the standard path — **193 total hours of recoverable
+> operational waste.**
+
+**⚡ Smart Warning**
+> Variant B is your highest-risk deviant path. SLA breach rate: **67%**.
+> If optimized to match the best-performing variant, this could reduce
+> cycle time by **~11.2 hours per case** — ~258 hours recovered across
+> 23 cases.
 
 **⚠️ Risk Prediction**
-> `"Lead Reviewed"` — **High Risk Score: 82/100**
-> Why: Extreme duration variability (σ = 340 mins) combined with high execution volume creates a statistically likely SLA breach point within the next operational cycle.
+> `Lead Reviewed` — **High Risk Score: 82/100**
+> Extreme duration variability (σ = 340 mins) combined with high
+> execution volume creates a statistically likely SLA breach point
+> within the next operational cycle.
 
 ---
 
@@ -167,8 +237,8 @@ Here's the kind of output the system produces from real workflow data:
 | Language | Python 3.9+ | Core application logic |
 | Data Engine | Pandas | Vectorized event log processing |
 | Visualization | Plotly | Interactive, high-fidelity charts |
-| Interface | Streamlit | Multi-page analytics dashboard |
-| Analytics | Custom Statistical Engines | Risk scoring, health metrics, bottleneck math |
+| Interface | Streamlit | Multi-tab analytics dashboard |
+| Analytics | Custom Statistical Engines | Variant mining, risk scoring, waste quantification |
 
 ---
 
@@ -178,20 +248,25 @@ Here's the kind of output the system produces from real workflow data:
 ai-workflow-intelligence/
 │
 ├── dashboard/
-│   └── app.py                  # Main multi-page Streamlit application
+│   └── app.py                  # Main Streamlit application (all tabs)
 │
 ├── src/
-│   ├── preprocessing.py        # Timestamp parsing, duration calculation, SLA tagging
+│   ├── preprocessing.py        # Timestamp parsing, duration calc, SLA tagging
 │   ├── bottleneck_detector.py  # Bottleneck ranking and impact quantification
 │   ├── risk_predictor.py       # Statistical variability and risk scoring
 │   ├── health_analyzer.py      # Composite 0–100 Workflow Health Score
-│   ├── automation_engine.py    # Automation opportunity matching with ROI estimates
-│   ├── insight_engine.py       # Problem → Cause → Action → Impact chain generation
-│   └── context_analyzer.py    # Industry classification and human/system task detection
+│   ├── automation_engine.py    # Automation opportunity matching with ROI
+│   ├── insight_engine.py       # Problem → Cause → Action → Impact chains
+│   ├── context_analyzer.py     # Industry classification, task type detection
+│   └── variant_miner.py        # Process variant mining, classification,
+│                               # waste quantification, insight generation
 │
-├── data/                       # Directory for input CSV workflow logs
-├── assets/                     # Screenshots and visual documentation
-└── requirements.txt            # All project dependencies
+├── tests/
+│   └── test_variant_miner.py   # pytest unit tests for variant mining logic
+│
+├── data/                       # Input CSV workflow logs
+├── assets/                     # Dashboard screenshots
+└── requirements.txt            # Project dependencies
 ```
 
 ---
@@ -200,7 +275,7 @@ ai-workflow-intelligence/
 
 **1. Clone the Repository**
 ```bash
-git clone https://github.com/your-username/ai-workflow-intelligence.git
+git clone https://github.com/anamika-baruah/ai-workflow-intelligence.git
 cd ai-workflow-intelligence
 ```
 
@@ -216,17 +291,15 @@ streamlit run dashboard/app.py
 
 **4. Upload Your Data**
 
-Use any CSV with the following columns:
-
 | Column | Description |
 |---|---|
-| `case_id` | Unique identifier for each workflow instance |
+| `case_id` | Unique identifier per workflow instance |
 | `task` | Name of the process step |
 | `start_time` | Task start timestamp |
 | `end_time` | Task completion timestamp |
-| `user` | Agent or system that executed the task |
+| `user` | Agent or system that ran the task |
 
-> 💡 Don't have data? Generate a sample dataset instantly:
+> 💡 No data? Generate a sample dataset:
 > ```bash
 > python src/generate_dataset.py
 > ```
@@ -235,9 +308,15 @@ Use any CSV with the following columns:
 
 ## 🎯 Use Cases
 
-- **Sales Pipeline Optimization** — Identify exactly where leads stall in the pipeline and reduce lead-to-close time through targeted automation of approval steps.
-- **Customer Support Monitoring** — Separate active ticket resolution time from idle queue time; find which support categories are consistently breaching SLA.
-- **Business Process Governance** — Ensure cross-departmental workflows comply with stated SLAs; flag deviations and rework loops before they become systemic issues.
+- **Sales Pipeline Optimization** — Identify where leads stall, detect
+  which pipeline variants are causing the most SLA breaches, and
+  quantify the revenue impact of fixing the worst path.
+- **Customer Support Operations** — Separate active resolution time from
+  idle queue time; discover which ticket-handling variants are deviating
+  from standard and by how many steps.
+- **Business Process Governance** — Ensure workflows comply with stated
+  SLAs; surface rework loops and skipped steps before they become
+  systemic compliance issues.
 
 ---
 
@@ -246,11 +325,17 @@ Use any CSV with the following columns:
 **Anamika Baruah**  
 *Final Year MCA Student*
 
-Passionate about building intelligent systems that sit at the intersection of data analytics, AI, and real-world business problem solving. This project reflects a conviction that the highest-value AI applications don't just surface data — they help people make better decisions faster.
+Passionate about building intelligent systems at the intersection of
+data analytics, AI, and real-world business problem solving. This
+project reflects a conviction that the highest-value AI applications
+don't just surface data — they help people make better decisions faster.
 
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/anamika-baruah/)
 [![GitHub](https://img.shields.io/badge/GitHub-Follow-181717?style=flat-square&logo=github&logoColor=white)](https://github.com/anamika-baruah)
 
 ---
 
-*Built as part of the AI Process Intelligence project — developed independently to explore applied operational analytics.*
+*Built independently as part of an applied operational analytics
+research project — exploring how process intelligence tooling can be
+made accessible without enterprise-scale infrastructure.*
+

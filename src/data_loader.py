@@ -1,67 +1,51 @@
 """
 data_loader.py
 
-Reusable utility for loading workflow event-log CSV files into a clean
-pandas DataFrame, with validation and datetime parsing.
+Loads workflow CSV files and validates them before anything else runs.
+Raises early if columns are missing or timestamps can't be parsed.
 """
 
 import os
-
 import pandas as pd
 
 
-# Columns that every valid workflow log must contain
+# every valid workflow log needs these
 REQUIRED_COLUMNS = {"case_id", "task", "start_time", "end_time", "user"}
 
 
 def load_workflow_data(file_path: str) -> pd.DataFrame:
-    """Load a workflow event-log CSV and return a cleaned DataFrame.
+    """Load and validate a workflow event-log CSV.
 
-    Steps performed:
-        1. Verify the file exists on disk.
-        2. Read the CSV into a DataFrame.
-        3. Validate that all required columns are present.
-        4. Convert timestamp columns to proper datetime objects.
-        5. Strip leading/trailing whitespace from string columns.
-        6. Return the cleaned DataFrame.
+    Checks file existence, validates columns, parses timestamps, and
+    strips whitespace from string fields. Fails loudly if anything's wrong —
+    better to catch bad data here than get silent errors downstream.
 
     Parameters
     ----------
     file_path : str
-        Path to the CSV file containing workflow logs.
+        Path to the CSV file.
 
     Returns
     -------
     pd.DataFrame
-        Cleaned DataFrame with datetime-typed timestamp columns.
+        Cleaned DataFrame with proper datetime columns.
 
     Raises
     ------
     FileNotFoundError
-        If *file_path* does not point to an existing file.
+        If the file doesn't exist.
     ValueError
-        If the CSV is missing one or more required columns, or if
-        timestamp values cannot be parsed.
+        If required columns are missing or timestamps can't be parsed.
     """
 
-    # ------------------------------------------------------------------
-    # 1. Check that the file actually exists
-    # ------------------------------------------------------------------
     if not os.path.isfile(file_path):
         raise FileNotFoundError(
             f"Workflow log file not found: {file_path}"
         )
 
-    # ------------------------------------------------------------------
-    # 2. Read the CSV into a DataFrame
-    # ------------------------------------------------------------------
     df = pd.read_csv(file_path)
 
-    # ------------------------------------------------------------------
-    # 3. Validate required columns
-    #    Compare the set of expected columns against what was loaded.
-    #    If any are missing, raise a clear error listing them.
-    # ------------------------------------------------------------------
+    # quick check — fail immediately if something's missing
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
         raise ValueError(
@@ -69,11 +53,8 @@ def load_workflow_data(file_path: str) -> pd.DataFrame:
             f"'{file_path}': {', '.join(sorted(missing))}"
         )
 
-    # ------------------------------------------------------------------
-    # 4. Convert start_time and end_time to datetime objects
-    #    Using errors='coerce' would silently turn bad values into NaT;
-    #    instead we raise so the caller knows right away.
-    # ------------------------------------------------------------------
+    # parse timestamps — raise if it fails, don't silently coerce to NaT
+    # this might break if the format is unusual, but that's intentional
     for col in ("start_time", "end_time"):
         try:
             df[col] = pd.to_datetime(df[col])
@@ -82,13 +63,8 @@ def load_workflow_data(file_path: str) -> pd.DataFrame:
                 f"Could not parse column '{col}' as datetime: {exc}"
             ) from exc
 
-    # ------------------------------------------------------------------
-    # 5. Clean string columns — strip extra whitespace
-    # ------------------------------------------------------------------
+    # strip extra whitespace from string columns
     for col in ("case_id", "task", "user"):
         df[col] = df[col].astype(str).str.strip()
 
-    # ------------------------------------------------------------------
-    # 6. Return the cleaned DataFrame
-    # ------------------------------------------------------------------
     return df
