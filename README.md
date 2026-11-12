@@ -2,7 +2,7 @@
 
 Upload an event log from any multi-step process (sales pipeline, support tickets, approvals, onboarding) and see which step slows it down, where cases wait, which paths cost the most, and what fixing the worst step would be worth.
 
-![Summary view](assets/summary.png)
+<img src="assets/summary.png" alt="Summary view of the Workflow Bottleneck Analyzer" width="900">
 
 ## What it answers
 
@@ -23,13 +23,23 @@ Upload an event log from any multi-step process (sales pipeline, support tickets
 
 The sample logs are synthetic and seeded, so these numbers are reproducible: run `python src/generate_dataset.py` to regenerate them.
 
-| Variants | Recommendations |
-|---|---|
-| ![Process variants](assets/variants.png) | ![Recommendations](assets/recommendations.png) |
+### Process variants
+
+Every distinct path cases take, compared with the standard path.
+
+<img src="assets/variants.png" alt="Process variants view" width="900">
+
+### Recommendations
+
+Findings and fixes are derived from the numbers: a slow tail, a queue before a step, rework.
+
+<img src="assets/recommendations.png" alt="Recommendations view" width="900">
 
 ## Run it
 
 ```bash
+git clone https://github.com/anamika-baruah/workflow-bottleneck-analyzer.git
+cd workflow-bottleneck-analyzer
 pip install -r requirements.txt
 streamlit run dashboard/app.py
 ```
@@ -81,4 +91,4 @@ Run the tests with `pip install -r requirements-dev.txt` once, then `python -m p
 
 ## Author
 
-Anamika Baruah. [LinkedIn](https://www.linkedin.com/in/anamika-baruah/) · [GitHub](https://github.com/anamika-baruah)
+Anamika Baruah, final-year MCA student. [GitHub](https://github.com/anamika-baruah)
