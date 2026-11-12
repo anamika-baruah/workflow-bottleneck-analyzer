@@ -1,752 +1,517 @@
 """
 dashboard/app.py
 
-Streamlit dashboard for analyzing workflow bottlenecks.
+Workflow Bottleneck Analyzer: upload a workflow event log (or pick a sample)
+and see where time is lost.
 
-Run from the project root with:
+Run from the project root:
     streamlit run dashboard/app.py
 """
 
-import sys
-import os
-import tempfile
-import io
+from __future__ import annotations
 
-import streamlit as st
+import os
+import sys
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import streamlit as st
 
-# ---------------------------------------------------------------------------
-# Make the project's src/ package importable regardless of working directory
-# ---------------------------------------------------------------------------
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from src.data_loader import load_workflow_data          # noqa: E402
-from src.preprocessing import (
-    preprocess_workflow,
-    compute_case_durations,
-    detect_exception_flows,
-)  # noqa: E402
-from src.bottleneck_detector import (
-    detect_bottlenecks,
-    generate_recommendation,
-    generate_priority_actions,
-)  # noqa: E402
-from src.risk_predictor import predict_bottleneck_risk  # noqa: E402
-from src.health_analyzer import calculate_workflow_health  # noqa: E402
-from src.context_analyzer import detect_workflow_context  # noqa: E402
-from src.automation_engine import identify_automation_opportunities  # noqa: E402
-from src.insight_engine import generate_smart_insight  # noqa: E402
-
-# ---------------------------------------------------------------------------
-# Page configuration
-# ---------------------------------------------------------------------------
-st.set_page_config(
-    page_title="AI Workflow Bottleneck Analyzer",
-    page_icon="🔍",
-    layout="wide",
+from dashboard.theme import (  # noqa: E402
+    ACCENT, ACCENT_SOFT, CHART_CONFIG, INK, MUTED, NEUTRAL, VARIANT_COLORS, WARN,
+    apply_theme, brand, chain_card, data_table, esc, finding_card, fmt_minutes, kpi, risk_bar,
+    style_fig, variant_card, variants_table,
+)
+from src.automation_engine import ASSUMED_REDUCTION, identify_automation_opportunities  # noqa: E402
+from src.bottleneck_detector import (  # noqa: E402
+    detect_bottlenecks, find_handoff_delay, generate_priority_actions, generate_recommendation,
+    handoff_action, has_slow_tail, slow_tail_action, summarize_steps,
+)
+from src.data_loader import apply_mapping, read_csv_bytes, suggest_mapping  # noqa: E402
+from src.health_analyzer import WEIGHTS, compute_health_score  # noqa: E402
+from src.decision_chain import build_decision_chain  # noqa: E402
+from src.preprocessing import (  # noqa: E402
+    compute_case_durations, detect_exception_flows, infer_step_order, preprocess_workflow,
+)
+from src.step_risk import score_step_risk  # noqa: E402
+from src.variant_miner import (  # noqa: E402
+    generate_variant_insights, generate_variant_recommendations, mine_variants,
+    score_variants, tag_variant_type,
 )
 
-# ---------------------------------------------------------------------------
-# Custom CSS
-# ---------------------------------------------------------------------------
-st.markdown(
-    """
-    <style>
-    /* Metric cards */
-    div[data-testid="stMetric"] {
-        background: linear-gradient(135deg, #1e1e2f 0%, #2d2d44 100%);
-        border: 1px solid #3a3a5c;
-        border-radius: 12px;
-        padding: 16px 20px;
-    }
-    /* Bottleneck alert */
-    .bottleneck-alert {
-        background: linear-gradient(135deg, #ff4b4b22 0%, #ff4b4b11 100%);
-        border-left: 4px solid #ff4b4b;
-        border-radius: 8px;
-        padding: 20px 24px;
-        margin: 16px 0;
-    }
-    .bottleneck-alert h2 {
-        margin: 0 0 8px 0;
-        color: #ff4b4b;
-    }
-    .bottleneck-alert p {
-        margin: 0;
-        font-size: 1.05rem;
-    }
-    /* Landing page feature card */
-    .feature-card {
-        background: linear-gradient(135deg, #1e1e2f 0%, #2d2d44 100%);
-        border: 1px solid #3a3a5c;
-        border-radius: 12px;
-        padding: 20px 24px;
-        margin: 8px 0;
-        text-align: center;
-    }
-    .feature-card h3 { margin: 8px 0 4px 0; font-size: 1.05rem; }
-    .feature-card p  { margin: 0; font-size: 0.9rem; color: #aaa; }
-    /* Upload validation banner */
-    .col-valid   { color: #2ecc71; font-weight: 600; }
-    .col-missing { color: #e74c3c; font-weight: 600; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.set_page_config(page_title="Workflow Bottleneck Analyzer",
+                   page_icon=os.path.join(PROJECT_ROOT, "assets", "logo.png"),
+                   layout="wide")
+apply_theme()
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Header
-# ═══════════════════════════════════════════════════════════════════════════
-st.title("🔍 AI Workflow Bottleneck Analyzer")
-st.markdown(
-    "Upload a workflow event-log CSV to automatically detect "
-    "which step is slowing down your process."
-)
+SAMPLES = {
+    "Sales pipeline (sample)": "sample_sales_pipeline.csv",
+    "Support tickets (sample)": "sample_support_tickets.csv",
+}
+UPLOAD = "Upload your own CSV"
+PAGES = ["Summary", "Bottlenecks", "Process variants", "Recommendations"]
+REQUIRED_COLUMNS = [
+    ("case_id", "Identifier of one workflow instance (order, ticket, lead)"),
+    ("task", "Name of the step"),
+    ("start_time", "When the step started"),
+    ("end_time", "When the step finished"),
+    ("user", "Person or system that performed the step (optional)"),
+]
+FIELD_LABELS = [
+    ("case_id", "Case ID (one order, ticket, lead)", True),
+    ("task", "Step name", True),
+    ("start_time", "Step start time", True),
+    ("end_time", "Step end time", True),
+    ("user", "Person or system", False),
+]
+REQUIRED_COLUMNS_ORDER = ("case_id", "task", "start_time", "end_time")
+NONE_CHOICE = "(none)"
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Sidebar — File Upload & Navigation
-# ═══════════════════════════════════════════════════════════════════════════
-REQUIRED_COLS = {"case_id", "task", "start_time", "end_time", "user"}
+
+@st.cache_data(show_spinner=False)
+def read_upload(content: bytes) -> pd.DataFrame:
+    return read_csv_bytes(content)
+
+
+@st.cache_data(show_spinner=False)
+def load_raw(content: bytes, mapping: tuple) -> pd.DataFrame:
+    return apply_mapping(read_csv_bytes(content), dict(mapping))
+
+
+def pct(value: float) -> str:
+    return f"{value:.0f}%"
+
+
+# Sidebar: data source, settings, navigation
+with st.sidebar:
+    st.markdown(brand(), unsafe_allow_html=True)
+    st.markdown("## Data")
+    source = st.radio("Dataset", [*SAMPLES, UPLOAD], label_visibility="collapsed")
+    uploaded = None
+    if source == UPLOAD:
+        uploaded = st.file_uploader("CSV event log", type=["csv"], label_visibility="collapsed")
+
+    st.markdown("## View")
+    page = st.radio("View", PAGES, label_visibility="collapsed", key="nav")
+
+# Load data
+content: bytes | None = None
+dataset_label = source
+if source == UPLOAD:
+    if uploaded is not None:
+        content, dataset_label = uploaded.getvalue(), uploaded.name
+else:
+    with open(os.path.join(PROJECT_ROOT, "data", SAMPLES[source]), "rb") as handle:
+        content = handle.read()
+
+mapping_pairs: tuple | None = None
+if content is not None and source == UPLOAD:
+    try:
+        preview = read_upload(content)
+    except ValueError as exc:
+        st.error(f"The file could not be loaded: {exc}")
+        st.stop()
+    guess = suggest_mapping(list(preview.columns))
+    with st.sidebar:
+        with st.expander("Match your columns", expanded=not all(guess[f] for f in REQUIRED_COLUMNS_ORDER)):
+            st.caption("Tell the app which column in your file holds each field.")
+            chosen: dict[str, str | None] = {}
+            options = [NONE_CHOICE, *map(str, preview.columns)]
+            for field, label, required in FIELD_LABELS:
+                default = guess.get(field)
+                index = options.index(str(default)) if default is not None else 0
+                pick = st.selectbox(label + ("" if required else " (optional)"), options, index=index,
+                                    key=f"map-{field}-{dataset_label}")
+                chosen[field] = None if pick == NONE_CHOICE else pick
+    mapping_pairs = tuple(sorted(chosen.items(), key=lambda kv: kv[0]))
+
+if content is None:
+    st.title("Workflow Bottleneck Analyzer")
+    st.markdown('<div class="kicker">Find which step slows a process down, and what fixing it is worth.</div>',
+                unsafe_allow_html=True)
+    st.info("Upload a CSV event log in the sidebar, or choose a sample dataset.")
+    st.markdown("**Expected columns**")
+    st.dataframe(pd.DataFrame(REQUIRED_COLUMNS, columns=["Column", "Meaning"]),
+                 hide_index=True, width="stretch")
+    st.stop()
+
+if mapping_pairs is None:  # the bundled samples already use our column names
+    mapping_pairs = tuple((f, f) for f in (*REQUIRED_COLUMNS_ORDER, "user"))
+try:
+    raw = load_raw(content, mapping_pairs)
+except (ValueError, FileNotFoundError) as exc:
+    st.error(f"The file could not be loaded: {exc}")
+    st.stop()
+
+order = infer_step_order(raw)
+default_sla = preprocess_workflow(raw).attrs["sla_minutes"]
 
 with st.sidebar:
-    st.header("📂 Data Source")
-
-    uploaded_file = st.file_uploader(
-        "Choose a workflow CSV file",
-        type=["csv"],
-        help="The CSV must contain: case_id, task, start_time, end_time, user",
-    )
-
-    # ── Quick column validation preview (shown immediately on upload) ──
-    if uploaded_file is not None:
-        try:
-            peek_df = pd.read_csv(uploaded_file, nrows=0)
-            uploaded_file.seek(0)          # rewind so downstream reads still work
-            found_cols = set(peek_df.columns.str.strip())
-            missing_cols = REQUIRED_COLS - found_cols
-
-            if missing_cols:
-                st.error(
-                    f"**Missing columns:** {', '.join(sorted(missing_cols))}\n\n"
-                    "Please fix your CSV and re-upload.",
-                    icon="❌",
-                )
-                st.caption("Detected columns: " + ", ".join(sorted(found_cols)))
-            else:
-                st.success("✅ All required columns found!", icon="✅")
-        except Exception as exc:
-            st.warning(f"Could not peek at file: {exc}")
-            missing_cols = set()
-    else:
-        missing_cols = {"_placeholder"}      # keeps upload_file block self-contained
-
-    # ── Navigation (only after valid file) ────────────────────────────
-    if uploaded_file is not None and not missing_cols:
-        st.divider()
-        st.header("🧭 Navigation")
-        page = st.radio(
-            "Select View:",
-            ["Overview", "Bottleneck Analysis", "Exception Analysis", "Risk & Insights"],
-            index=0,
+    with st.expander("SLA targets per step"):
+        st.caption("Defaults are 2x each step's median duration. Replace them with your real targets.")
+        sla_editor = st.data_editor(
+            pd.DataFrame({"Step": order, "Target (min)": [float(default_sla[t]) for t in order]}),
+            key=f"sla-{dataset_label}-{len(raw)}",
+            hide_index=True,
+            disabled=["Step"],
+            column_config={"Target (min)": st.column_config.NumberColumn(min_value=1, step=5, format="%d")},
+            width="stretch",
         )
-    else:
-        page = "Overview"   # default; main block won't run if file is None/invalid
 
-    st.divider()
+sla_minutes = dict(zip(sla_editor["Step"], sla_editor["Target (min)"]))
+df = preprocess_workflow(raw, sla_minutes)
+if df.empty:
+    st.error("No usable rows remain after cleaning. Check the timestamp columns.")
+    st.stop()
+
+# Analysis
+case_durations = compute_case_durations(df)
+exceptions_df, n_exception_cases = detect_exception_flows(df, order)
+task_stats, bn_task, bn_total_minutes, bn_pct = detect_bottlenecks(df)
+steps = summarize_steps(df, order)
+n_cases = df["case_id"].nunique()
+health = compute_health_score(df, bn_pct, n_exception_cases)
+quality = df.attrs["quality"]
+bn = steps.loc[bn_task]
+median_cycle_min = float(case_durations["total_duration_minutes"].median())
+
+
+def top_wait_step() -> tuple[str, float]:
+    waits = steps["avg_wait_before"]
+    return waits.idxmax(), float(waits.max())
+
+
+# Page: Summary
+if page == "Summary":
+    st.title("Workflow Bottleneck Analyzer")
+    first, last = df["start_time"].min(), df["end_time"].max()
     st.markdown(
-        "**Expected columns:**\n"
-        "- `case_id` — unique workflow instance\n"
-        "- `task` — step name\n"
-        "- `start_time` — when the step started\n"
-        "- `end_time` — when the step finished\n"
-        "- `user` — who performed the step"
-    )
-
-    # ── Sample data download ───────────────────────────────────────────
-    st.divider()
-    st.markdown("**Need sample data?**")
-
-    sample_csv = """case_id,task,start_time,end_time,user
-C001,Lead Created,2024-01-01 09:00,2024-01-01 09:03,alice
-C001,Lead Reviewed,2024-01-01 09:03,2024-01-01 09:35,bob
-C001,Manager Approval,2024-01-01 09:35,2024-01-01 11:55,carol
-C001,Proposal Sent,2024-01-01 11:55,2024-01-01 12:55,alice
-C001,Deal Closed,2024-01-01 12:55,2024-01-01 13:55,bob
-C002,Lead Created,2024-01-02 10:00,2024-01-02 10:04,dave
-C002,Lead Reviewed,2024-01-02 10:04,2024-01-02 10:40,alice
-C002,Manager Approval,2024-01-02 10:40,2024-01-02 13:30,carol
-C002,Proposal Sent,2024-01-02 13:30,2024-01-02 14:30,dave
-C002,Deal Closed,2024-01-02 14:30,2024-01-02 15:30,alice
-"""
-    st.download_button(
-        label="⬇️ Download Sample CSV",
-        data=sample_csv,
-        file_name="sample_workflow.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Landing page — shown when no file is uploaded yet
-# ═══════════════════════════════════════════════════════════════════════════
-if uploaded_file is None:
-
-    st.markdown("---")
-
-    # Hero banner
-    st.markdown(
-        """
-        <div style="text-align:center; padding: 32px 0 16px 0;">
-            <div style="font-size: 3.5rem;">📊</div>
-            <h2 style="margin: 8px 0 4px 0;">Drop your workflow log to get started</h2>
-            <p style="color: #888; font-size: 1.05rem;">
-                Paste a CSV into the sidebar uploader and get instant AI-powered analysis.
-            </p>
-        </div>
-        """,
+        f'<div class="kicker">{dataset_label} &nbsp;·&nbsp; {n_cases:,} cases &nbsp;·&nbsp; '
+        f'{first:%d %b %Y} to {last:%d %b %Y}</div>',
         unsafe_allow_html=True,
     )
 
-    # Feature grid
-    fc1, fc2, fc3, fc4 = st.columns(4)
-    with fc1:
-        st.markdown(
-            '<div class="feature-card"><div style="font-size:2rem">⚠️</div>'
-            '<h3>Bottleneck Detection</h3>'
-            '<p>Pinpoints the exact step slowing your process with duration stats</p></div>',
-            unsafe_allow_html=True,
+    detail = f"It accounts for {pct(bn_pct)} of all step time. "
+    if bn["avg_duration"] > 1.5 * bn["median_duration"]:
+        detail += (
+            f"A typical run takes {fmt_minutes(bn['median_duration'])}, but the average is "
+            f"{fmt_minutes(bn['avg_duration'])}: a minority of very slow runs drive the delay "
+            f"({pct(bn['sla_breach_pct'])} exceed the {fmt_minutes(bn['sla_target'])} SLA target)."
         )
-    with fc2:
-        st.markdown(
-            '<div class="feature-card"><div style="font-size:2rem">❤️</div>'
-            '<h3>Health Score</h3>'
-            '<p>0–100 score weighted by SLA compliance, exceptions & wait time</p></div>',
-            unsafe_allow_html=True,
-        )
-    with fc3:
-        st.markdown(
-            '<div class="feature-card"><div style="font-size:2rem">🎯</div>'
-            '<h3>Risk Prediction</h3>'
-            '<p>Flags high-variability tasks before they escalate into SLA breaches</p></div>',
-            unsafe_allow_html=True,
-        )
-    with fc4:
-        st.markdown(
-            '<div class="feature-card"><div style="font-size:2rem">🤖</div>'
-            '<h3>Smart Insights</h3>'
-            '<p>Context-aware recommendations with projected savings estimates</p></div>',
-            unsafe_allow_html=True,
-        )
+    else:
+        detail += (f"Runs average {fmt_minutes(bn['avg_duration'])} "
+                   f"(median {fmt_minutes(bn['median_duration'])}).")
+    wait_step, wait_value = top_wait_step()
+    if wait_step != bn_task and wait_value > bn["avg_duration"] * 0.5:
+        detail += (f" Separately, cases wait {fmt_minutes(wait_value)} on average before "
+                   f"'{wait_step}' starts, the longest handoff delay.")
+    st.markdown(finding_card("Main bottleneck", bn_task, detail), unsafe_allow_html=True)
 
-    st.markdown("---")
+    cols = st.columns(5)
+    tiles = [
+        ("Cases analysed", f"{n_cases:,}", f"{len(df):,} step executions"),
+        ("Median end-to-end time", fmt_minutes(median_cycle_min), "first start to last end"),
+        ("Step SLA breaches", pct(df["sla_violation"].mean() * 100), "of step executions"),
+        ("Cases with rework or skips", pct(n_exception_cases / n_cases * 100), f"{n_exception_cases:,} cases"),
+        ("Process health index", f"{health['score']:.0f} / 100", ""),
+    ]
+    for col, (label, value, note) in zip(cols, tiles):
+        status = health["status"] if label == "Process health index" else None
+        col.markdown(kpi(label, value, note, status=status), unsafe_allow_html=True)
 
-    # How it works + CSV format side by side
-    hw_col, fmt_col = st.columns([1, 1])
+    left, right = st.columns([3, 2], gap="large")
+    with left:
+        st.markdown("## Where the time goes")
+        st.caption("Average minutes per step: working on it (blue) and waiting for it to start (light blue). "
+                   "The bottleneck is shown in orange.")
+        ordered = steps.reset_index()
+        fig = go.Figure()
+        fig.add_bar(y=ordered["task"], x=ordered["avg_duration"], orientation="h", name="Working",
+                    marker_color=[WARN if t == bn_task else ACCENT for t in ordered["task"]],
+                    hovertemplate="%{y}<br>Working: %{x:,.0f} min<extra></extra>")
+        fig.add_bar(y=ordered["task"], x=ordered["avg_wait_before"], orientation="h",
+                    name="Waiting to start", marker_color=ACCENT_SOFT,
+                    hovertemplate="%{y}<br>Waiting: %{x:,.0f} min<extra></extra>")
+        fig.update_layout(barmode="stack", yaxis=dict(autorange="reversed"),
+                          xaxis_title="Average minutes per execution")
+        st.plotly_chart(style_fig(fig, 330, legend=False), width="stretch", config=CHART_CONFIG, theme=None)
 
-    with hw_col:
-        st.subheader("🚀 How it works")
-        st.markdown(
-            """
-1. **Upload** your workflow event-log CSV using the sidebar uploader.
-2. The system **validates** your columns instantly and previews the data.
-3. Navigate between **4 analysis views** using the sidebar menu.
-4. Export insights or download sample data to test the system immediately.
+    with right:
+        st.markdown("## End-to-end time per case")
+        durations_h = case_durations["total_duration_minutes"] / 60
+        cap = durations_h.quantile(0.99)
+        shown = durations_h[durations_h <= cap]
+        st.caption(f"Median {fmt_minutes(median_cycle_min)}. "
+                   + (f"{len(durations_h) - len(shown)} case(s) above the 99th percentile are not shown."
+                      if len(shown) < len(durations_h) else "All cases shown."))
+        fig = px.histogram(shown, nbins=30, color_discrete_sequence=[ACCENT])
+        fig.add_vline(x=median_cycle_min / 60, line_dash="dash", line_color=INK,
+                      annotation_text="median", annotation_position="top")
+        fig.update_layout(xaxis_title="Hours from first start to last end", yaxis_title="Cases")
+        fig.update_traces(hovertemplate="%{x:.0f} h: %{y} cases<extra></extra>")
+        style_fig(fig, 330, legend=False).update_layout(margin=dict(l=10, r=10, t=34, b=10))  # room for the label
+        st.plotly_chart(fig, width="stretch", config=CHART_CONFIG, theme=None)
 
-> 💡 Use the **Download Sample CSV** button in the sidebar to try the system right now.
-            """
-        )
-
-    with fmt_col:
-        st.subheader("📋 Required CSV format")
-        st.markdown("Your file must contain these **5 columns** (header row required):")
-
-        format_df = pd.DataFrame({
-            "Column": ["case_id", "task", "start_time", "end_time", "user"],
-            "Type": ["string", "string", "datetime", "datetime", "string"],
-            "Example": ["CASE-001", "Manager Approval", "2024-01-15 09:00", "2024-01-15 11:30", "alice"],
-            "Description": [
-                "Unique ID for each workflow instance",
-                "Name of the workflow step",
-                "When this step started",
-                "When this step finished",
-                "Who performed the step",
-            ],
+    with st.expander("How the health index is calculated"):
+        st.markdown("A heuristic index from 0 to 100, not a statistical model. Four measures are weighted "
+                    "and subtracted from 100.")
+        explain = pd.DataFrame({
+            "Measure": list(WEIGHTS),
+            "Current value": [f"{health['metrics'][name]:.0f}%" for name in WEIGHTS],
+            "Weight": [f"{weight:.0%}" for weight in WEIGHTS.values()],
         })
-        st.dataframe(format_df, hide_index=True, use_container_width=True)
+        st.dataframe(explain, hide_index=True, width="stretch")
+        st.caption("Bottleneck concentration measures how far the slowest step's share of step time exceeds "
+                   "an even split across steps.")
 
-        st.caption("Datetime format: `YYYY-MM-DD HH:MM` or ISO 8601")
-
-    st.markdown("---")
-
-    # Accordion: common issues
-    with st.expander("❓ Common upload issues & how to fix them"):
+    with st.expander("Data quality"):
         st.markdown(
-            """
-**Wrong column names?**
-Rename your headers to exactly: `case_id`, `task`, `start_time`, `end_time`, `user`.
-Column names are case-sensitive.
-
-**Datetime parsing errors?**
-Make sure timestamps use a standard format like `2024-01-15 09:00:00` or `2024-01-15T09:00`.
-Avoid locale-specific formats such as `15/01/24`.
-
-**File won't upload?**
-The uploader accepts `.csv` files only. If you have an Excel file, export it to CSV first via
-*File → Save As → CSV (Comma delimited)*.
-
-**Too many rows?**
-The system handles files up to ~50 MB comfortably. For larger logs, pre-filter to a
-representative time window before uploading.
-            """
+            f"{quality['rows_used']:,} of {quality['rows_in']:,} rows were used. "
+            f"Removed: {quality['unparseable_timestamps']:,} with unreadable timestamps and "
+            f"{quality['end_before_start']:,} where the end time is before the start time."
         )
 
-    st.stop()   # don't render the rest of the page until a file is present
+# Page: Bottlenecks
+elif page == "Bottlenecks":
+    st.title("Bottlenecks")
+    st.markdown('<div class="kicker">Duration, waiting and SLA performance for every step.</div>',
+                unsafe_allow_html=True)
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Guard: stop if uploaded file has missing columns (already shown error above)
-# ═══════════════════════════════════════════════════════════════════════════
-if missing_cols:
-    st.stop()
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Main analysis
-# ═══════════════════════════════════════════════════════════════════════════
-
-# ── Demo mode check ─────────────────────────────────────────────────────
-sample_filenames = {"workflow_logs.csv", "broken_workflow_logs.csv", "data.csv", "sample_workflow.csv"}
-if uploaded_file.name in sample_filenames:
-    st.info("⚠️ **Demo Mode**: Using simulated workflow data for demonstration purposes.", icon="💡")
-
-# ── Load & validate ──────────────────────────────────────────────────────
-try:
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
-        tmp.write(uploaded_file.getvalue())
-        tmp_path = tmp.name
-
-    with st.spinner("⏳ Loading and validating your data…"):
-        df_raw = load_workflow_data(tmp_path)
-
-except (FileNotFoundError, ValueError) as exc:
-    st.error(f"❌ **Data loading error:** {exc}")
-    st.stop()
-finally:
-    if "tmp_path" in locals() and os.path.exists(tmp_path):
-        os.unlink(tmp_path)
-
-# ── Quick data-quality banner ────────────────────────────────────────────
-n_rows   = len(df_raw)
-n_cases  = df_raw["case_id"].nunique()
-n_tasks  = df_raw["task"].nunique()
-date_min = df_raw["start_time"].min().strftime("%Y-%m-%d")
-date_max = df_raw["end_time"].max().strftime("%Y-%m-%d")
-
-st.success(
-    f"✅ **{uploaded_file.name}** loaded — "
-    f"**{n_rows:,}** events · **{n_cases:,}** cases · "
-    f"**{n_tasks}** unique steps · Date range: {date_min} → {date_max}",
-    icon="📂",
-)
-
-# ── Preprocess ───────────────────────────────────────────────────────────
-with st.spinner("⚙️ Preprocessing workflow data…"):
-    df = preprocess_workflow(df_raw)
-    case_durations = compute_case_durations(df)
-    exceptions_df, total_exception_cases = detect_exception_flows(df)
-
-# ── Detect bottlenecks ───────────────────────────────────────────────────
-with st.spinner("🔍 Detecting bottlenecks…"):
-    task_stats, bottleneck_task, total_bn_time, bottleneck_pct = detect_bottlenecks(df)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Page Content Routing
-# ═══════════════════════════════════════════════════════════════════════════
-
-if page == "Overview":
-    # 1. Workflow Health Score
-    st.markdown("---")
-    st.header("📊 Workflow Health Score")
-
-    health_data = calculate_workflow_health(df, bottleneck_pct, total_exception_cases)
-
-    h_score  = health_data["score"]
-    h_status = health_data["status"]
-    h_interp = health_data["interpretation"]
-
-    if h_score >= 80:
-        st.success(f"**Current Status:** {h_status}", icon="✅")
-    elif h_score >= 50:
-        st.warning(f"**Current Status:** {h_status}", icon="⚠️")
-    else:
-        st.error(f"**Current Status:** {h_status}", icon="🔴")
-
-    hcol1, hcol2 = st.columns([1, 4])
-    hcol1.metric("Health Score", f"{h_score}/100")
-    with hcol2:
-        st.markdown(f"**AI Interpretation:** {h_interp}")
-        if health_data.get("top_contributors"):
-            st.markdown("**🔍 Key Contributors to Low Score:**")
-            for contributor in health_data["top_contributors"]:
-                st.markdown(f"* {contributor}")
-
-    # 2. Workflow Context
-    st.markdown("---")
-    st.header("🧠 Workflow Context")
-    context = detect_workflow_context(df)
-
-    ctx_col1, ctx_col2 = st.columns(2)
-    ctx_col1.info(f"**Workflow Type:** {context['workflow_type']}", icon="🏷️")
-
-    with ctx_col2:
-        st.markdown("**Process Breakdown:**")
-        if context["human_tasks"]:
-            st.markdown(f"👤 **Human Tasks:** {', '.join(context['human_tasks'])}")
-        if context["system_tasks"]:
-            st.markdown(f"⚙️ **System Tasks:** {', '.join(context['system_tasks'])}")
-
-    st.markdown("---")
-    st.header("📈 Workflow Overview")
-    mcol1, mcol2, mcol3, mcol4 = st.columns(4)
-
-    mcol1.metric("📊 Total Events",    f"{len(df):,}")
-    mcol2.metric("📁 Unique Cases",    f"{df['case_id'].nunique():,}")
-    mcol3.metric("📋 Workflow Steps",  f"{df['task'].nunique()}")
-    mcol4.metric("⚠ Top Bottleneck",  bottleneck_task)
-
-    st.markdown("---")
-    st.header("📉 Duration Distribution")
-    st.markdown("Shows the distribution of total end-to-end time for all cases.")
-
-    fig_hist = px.histogram(
-        case_durations,
-        x="total_duration_minutes",
-        nbins=20,
-        title="<b>Case Completion Time Distribution</b>",
-        labels={"total_duration_minutes": "Total Duration (minutes)"},
-        color_discrete_sequence=["#636efa"],
-    )
-    fig_hist.update_layout(
-        xaxis_title="End-to-End Duration (minutes)",
-        yaxis_title="Number of Cases",
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        height=350,
-        margin=dict(t=50, b=40, l=40, r=40),
-    )
-    st.plotly_chart(fig_hist, width="stretch")
-
-    # SLA Compliance
-    st.markdown("---")
-    st.header("⏱ SLA Compliance Analysis")
-    st.markdown("Monitors task execution against defined Service Level Agreements (SLA).")
-
-    SLA_MAP = {
-        "Lead Created": 5, "Lead Reviewed": 30, "Manager Approval": 120,
-        "Proposal Sent": 60, "Deal Closed": 60
-    }
-
-    sla_data = df.groupby("task").agg(
-        avg_dur=("duration_minutes", "mean"),
-        violations=("sla_violation", "sum"),
-        total=("sla_violation", "count")
-    ).reset_index()
-    sla_data["violation_pct"] = (sla_data["violations"] / sla_data["total"]) * 100
-    sla_data["target_sla"] = sla_data["task"].map(SLA_MAP)
-    sla_data = sla_data.sort_values("violation_pct", ascending=False)
-
-    scol1, scol2 = st.columns([2, 3])
-
-    with scol1:
-        st.subheader("📋 Compliance Summary")
-        table_display = sla_data[["task", "target_sla", "avg_dur", "violation_pct"]].copy()
-        table_display.columns = ["Task", "SLA Target (min)", "Avg Duration", "Violation %"]
-        st.dataframe(
-            table_display.style.format({
-                "Avg Duration": "{:,.1f}m",
-                "Violation %": "{:.1f}%",
-                "SLA Target (min)": "{:,.0f}m"
-            }).highlight_between(left=80, right=100, subset=["Violation %"], color="#ff4b4b33"),
-            width="stretch", hide_index=True
-        )
-        top_violator = sla_data.iloc[0]
-        if top_violator["violation_pct"] > 50:
-            st.warning(
-                f"**{top_violator['task']}** exceeds SLA in **{top_violator['violation_pct']:.1f}%** of cases, "
-                "indicating a critical performance issue requiring attention.",
-                icon="⏱️"
-            )
-        else:
-            st.success("SLA compliance is within acceptable parameters.", icon="✅")
-
-    with scol2:
-        st.subheader("📊 Violation Rate by Step")
-        fig_sla = px.bar(
-            sla_data, x="task", y="violation_pct",
-            title="<b>SLA Violation % per Workflow Step</b>",
-            labels={"violation_pct": "Violation Rate (%)", "task": "Workflow Step"},
-            color_discrete_sequence=["#e74c3c"]
-        )
-        fig_sla.update_layout(plot_bgcolor="rgba(0,0,0,0)", height=350)
-        st.plotly_chart(fig_sla, width="stretch")
-
-    st.divider()
-    with st.expander("🔎 Preview Raw Data", expanded=False):
-        st.dataframe(df.head(50), width="stretch", hide_index=True)
-
-
-elif page == "Bottleneck Analysis":
-    st.markdown("---")
-    st.header("⚠ Bottleneck Analysis")
-    avg_val    = task_stats.loc[bottleneck_task, "avg_duration_minutes"]
-    median_val = task_stats.loc[bottleneck_task, "median_duration_minutes"]
-
-    if df["task"].nunique() > 1 and avg_val > 0:
-        st.markdown(
-            f"""
-            <div class="bottleneck-alert">
-                <h2>⚠️ {bottleneck_task}</h2>
-                <p>
-                    This step has the <strong>highest average duration</strong>
-                    across all workflow cases.<br>
-                    Average: <strong>{avg_val:,.2f} min</strong> &nbsp;|&nbsp;
-                    Median: <strong>{median_val:,.2f} min</strong>
-                </p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        st.success("No significant bottleneck detected.", icon="✅")
-
-    st.markdown("---")
-    st.header("🎯 Bottleneck Impact Analysis")
-    total_workflow_time = df["duration_minutes"].sum()
-    other_time          = total_workflow_time - total_bn_time
-    bn_case_count       = int(task_stats.loc[bottleneck_task, "count"])
-
-    ic1, ic2, ic3 = st.columns(3)
-    ic1.metric("⏳ Total Time in Bottleneck",      f"{total_bn_time:,.0f} min")
-    ic2.metric("📉 Share of Total Workflow Time",  f"{bottleneck_pct:.1f}%")
-    ic3.metric("🗂️ Cases Affected",               f"{bn_case_count:,}")
-
-    donut_labels = [f"🔴 {bottleneck_task}", "🔵 All Other Steps"]
-    donut_values = [total_bn_time, max(other_time, 0)]
-    donut_colors = ["#ff4b4b", "#636efa"]
-
-    fig_donut = go.Figure(
-        go.Pie(
-            labels=donut_labels,
-            values=donut_values,
-            hole=0.55,
-            marker=dict(colors=donut_colors, line=dict(color="#1e1e2f", width=2)),
-            textinfo="label+percent",
-            hovertemplate="%{label}: %{value:,.0f} min<extra></extra>",
-        )
-    )
-    fig_donut.update_layout(
-        title="<b>Bottleneck Share of Total Workflow Time</b>",
-        height=380,
-        showlegend=True,
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        margin=dict(t=60, b=20, l=20, r=20),
-    )
-    st.plotly_chart(fig_donut, width="stretch")
-
-    st.markdown("---")
-    st.header("📋 Task Duration Statistics")
-    timeline_df = task_stats.reset_index().rename(columns={
-        "task": "Task",
-        "avg_duration_minutes": "Avg Duration (min)",
-        "median_duration_minutes": "Median Duration (min)",
-        "count": "Executions",
+    table = steps.reset_index().rename(columns={
+        "task": "Step", "executions": "Runs", "avg_duration": "Average (min)",
+        "median_duration": "Median (min)", "p90_duration": "90th pct (min)",
+        "avg_wait_before": "Wait before (min)", "sla_target": "SLA target (min)",
+        "sla_breach_pct": "SLA breaches", "total_hours": "Total time (h)",
     })
-    timeline_df["Avg Duration (min)"] = timeline_df["Avg Duration (min)"].round(1)
-    timeline_df["Median Duration (min)"] = timeline_df["Median Duration (min)"].round(1)
-
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Stats Table", "📈 Timeline", "📉 Bar Chart", "📦 Box Plot"])
-
-    with tab1:
-        st.dataframe(
-           timeline_df,
+    st.dataframe(
+        table, hide_index=True, width="stretch",
         column_config={
-            "Avg Duration (min)": st.column_config.NumberColumn(format="%.1f"),
-            "Median Duration (min)": st.column_config.NumberColumn(format="%.1f"),
+            "Runs": st.column_config.NumberColumn(format="%d"),
+            "Average (min)": st.column_config.NumberColumn(format="%.0f"),
+            "Median (min)": st.column_config.NumberColumn(format="%.0f"),
+            "90th pct (min)": st.column_config.NumberColumn(format="%.0f"),
+            "Wait before (min)": st.column_config.NumberColumn(format="%.0f"),
+            "SLA target (min)": st.column_config.NumberColumn(format="%.0f"),
+            "SLA breaches": st.column_config.NumberColumn(format="%.0f%%"),
+            "Total time (h)": st.column_config.NumberColumn(format="%.0f"),
         },
-        hide_index=True,
-        width="stretch"
     )
+    st.download_button("Download step summary (CSV)", table.round(1).to_csv(index=False).encode(),
+                       file_name="step_summary.csv", mime="text/csv")
 
-    with tab2:
-        fig_line = px.line(
-            timeline_df, x="Task", y="Avg Duration (min)",
-            title="<b>Average Duration Timeline by Step</b>",
-            markers=True, color_discrete_sequence=["#636efa"]
-        )
-        fig_line.update_layout(plot_bgcolor="rgba(0,0,0,0)", height=380)
-        st.plotly_chart(fig_line, width="stretch")
+    left, right = st.columns(2, gap="large")
+    with left:
+        st.markdown("## Duration spread by step")
+        st.caption("Box = middle 50% of runs, line = median. A long upper whisker means a few runs take far longer. "
+                   "Log scale, so fast steps stay readable next to slow ones.")
+        fig = px.box(df, x="task", y=df["duration_minutes"] / 60, color="task", points=False,
+                     category_orders={"task": order},
+                     color_discrete_map={t: (WARN if t == bn_task else ACCENT) for t in order})
+        fig.update_layout(xaxis_title=None, yaxis_title="Time per run (log scale)")
+        lo, hi = float(df["duration_minutes"].clip(lower=0.1).min()), float(df["duration_minutes"].max())
+        ticks = [(1, "1 min"), (5, "5 min"), (15, "15 min"), (30, "30 min"), (60, "1 h"), (120, "2 h"),
+                 (300, "5 h"), (600, "10 h"), (1440, "1 day"), (2880, "2 days"), (7200, "5 days")]
+        ticks = [(m, label) for m, label in ticks if lo / 2 <= m <= hi * 2]
+        fig.update_yaxes(type="log", tickvals=[m / 60 for m, _ in ticks], ticktext=[label for _, label in ticks],
+                         minor=dict(showgrid=False))
+        st.plotly_chart(style_fig(fig, 340, legend=False), width="stretch", config=CHART_CONFIG, theme=None)
+    with right:
+        st.markdown("## Wait before each step")
+        handoff = find_handoff_delay(steps)
+        st.caption("Average time between the previous step finishing and this one starting. "
+                   + ("Orange marks a wait far above the other steps."
+                      if handoff else "No step stands out: waits are similar across steps."))
+        waits = steps.reset_index()
+        fig = go.Figure(go.Bar(
+            x=waits["task"], y=waits["avg_wait_before"],
+            marker_color=[WARN if handoff and t == handoff["task"] else NEUTRAL for t in waits["task"]],
+            hovertemplate="%{x}<br>%{y:,.0f} min<extra></extra>"))
+        fig.update_layout(xaxis_title=None, yaxis_title="Average minutes")
+        st.plotly_chart(style_fig(fig, 340, legend=False), width="stretch", config=CHART_CONFIG, theme=None)
 
-    with tab3:
-        timeline_df["Color"] = timeline_df["Task"].apply(
-            lambda t: "#ff4b4b" if t == bottleneck_task else "#636efa"
-        )
-        fig_bar = px.bar(
-            timeline_df, x="Task", y="Avg Duration (min)",
-            text="Avg Duration (min)",
-            title="<b>Mean Execution Time by Step</b>",
-            labels={"Avg Duration (min)": "Minutes", "Task": "Workflow Step"},
-            color="Color", color_discrete_map="identity"
-        )
-        fig_bar.update_traces(texttemplate='%{text:.1f}m', textposition='outside')
-        fig_bar.update_layout(plot_bgcolor="rgba(0,0,0,0)", height=400, showlegend=False)
-        st.plotly_chart(fig_bar, width="stretch")
+    st.markdown("## What-if: speed up the bottleneck")
+    st.caption(f"Reduce the duration of '{bn_task}' and see the effect on average end-to-end time. "
+               "Assumes the saved time shortens the case directly.")
+    default_cut = generate_recommendation(bn_task, float(bn["avg_duration"]), int(bn["executions"]))["target_reduction_pct"]
+    cut = st.slider("Reduction in step duration", 0, 100, int(default_cut), 5, format="%d%%")
+    current = float(case_durations["total_duration_minutes"].mean())
+    saved = bn_total_minutes / n_cases * cut / 100
+    simulated = max(0.0, current - saved)
+    c1, c2, c3 = st.columns(3)
+    c1.markdown(kpi("Average end-to-end today", fmt_minutes(current)), unsafe_allow_html=True)
+    c2.markdown(kpi("Average with change", fmt_minutes(simulated), f"{fmt_minutes(saved)} saved per case"),
+                unsafe_allow_html=True)
+    c3.markdown(kpi("Overall improvement", f"{saved / current * 100:.1f}%" if current else "0%"),
+                unsafe_allow_html=True)
 
-    with tab4:
-        fig_box = px.box(
-            df, x="task", y="duration_minutes",
-            color="task", points="outliers",
-            title="<b>Variance and Outlier Detection</b>",
-            labels={"duration_minutes": "Duration (min)", "task": "Step Name"}
-        )
-        fig_box.update_layout(plot_bgcolor="rgba(0,0,0,0)", height=400, showlegend=False)
-        st.plotly_chart(fig_box, width="stretch")
+# Page: Process variants
+elif page == "Process variants":
+    st.title("Process variants")
+    st.markdown('<div class="kicker">The distinct paths cases take through the process, and what each costs.</div>',
+                unsafe_allow_html=True)
+
+    default_limit = int(min(336, max(4, round(median_cycle_min / 60 * 1.5))))
+    sla_hours = st.slider("Case SLA: maximum acceptable end-to-end time (hours)", 4, 336, default_limit, 1)
+
+    variant_df = mine_variants(df)
+    if variant_df.empty:
+        st.warning("No variants could be mined from this dataset.")
+        st.stop()
+
+    standard_path = variant_df.iloc[0]["fingerprint"].split("|")
+    variant_df["variant_type"] = variant_df["fingerprint"].apply(lambda fp: tag_variant_type(fp, standard_path))
+    variant_df = score_variants(df, variant_df, sla_limit_hours=sla_hours)
+    variant_df = generate_variant_recommendations(variant_df)
+
+    total = int(variant_df["frequency"].sum())
+    conformant = variant_df[variant_df["variant_type"] == "Conformant"]
+    rework = variant_df[variant_df["variant_type"] == "Rework loop"]
+    std_hours = float(conformant["avg_cycle_hours"].mean()) if len(conformant) else float("nan")
+    rework_extra = (float((rework["avg_cycle_hours"] * rework["frequency"]).sum() / rework["frequency"].sum()) - std_hours
+                    if len(rework) and len(conformant) else 0.0)
+
+    cols = st.columns(4)
+    cols[0].markdown(kpi("Distinct paths", f"{len(variant_df)}", "unique step sequences"), unsafe_allow_html=True)
+    cols[1].markdown(kpi("Cases on the standard path", pct(conformant["frequency"].sum() / total * 100), "most common sequence"),
+                     unsafe_allow_html=True)
+    cols[2].markdown(kpi("Cases with a rework loop", pct(rework["frequency"].sum() / total * 100),
+                         f"{int(rework['frequency'].sum())} cases"), unsafe_allow_html=True)
+    cols[3].markdown(kpi("Extra time from rework", f"{rework_extra:+.1f} h" if len(rework) else "None",
+                         "per case vs standard path"), unsafe_allow_html=True)
+
+    st.markdown("## Paths")
+    ranked = variant_df.sort_values("frequency", ascending=False)
+    main = ranked[ranked["frequency"] >= max(2, int(total * 0.01))]
+    if main.empty:
+        main = ranked
+    rare = ranked.drop(main.index)
+
+    def table_rows(frame):
+        return [{"variant": r.variant_label, "type": r.variant_type, "cases": int(r.frequency),
+                 "share": r.frequency / total * 100, "avg_cycle": float(r.avg_cycle_hours),
+                 "breach": float(r.sla_breach_rate) * 100, "wait": float(r.avg_wait_ratio) * 100}
+                for r in frame.itertuples()]
+
+    st.markdown(variants_table(table_rows(main)), unsafe_allow_html=True)
+    if len(rare):
+        with st.expander(f"Rare paths ({len(rare)} paths, {int(rare['frequency'].sum())} cases)"):
+            st.markdown(variants_table(table_rows(rare)), unsafe_allow_html=True)
+
+    st.markdown("## Path details")
+    st.caption("Red steps are repeated (rework). Dashed steps were skipped. Purple steps are not part of the standard path.")
+    for r in main.itertuples():
+        meta = f"{int(r.frequency)} cases, {r.frequency / total * 100:.0f}% of total, {r.avg_cycle_hours:.1f} h average"
+        action = ("The most common path. It is the baseline the other variants are compared against."
+                  if r.variant_type == "Conformant" else r.recommendation)
+        st.markdown(variant_card(r.variant_label, r.variant_type, meta, r.fingerprint.split("|"),
+                                 standard_path, action), unsafe_allow_html=True)
 
 
-elif page == "Exception Analysis":
-    st.markdown("---")
-    st.header("⚠ Workflow Exceptions")
-    st.markdown("Identifies cases with process violations like rework loops or unexpected task sequences.")
+    st.markdown("## Key insights")
+    for line in generate_variant_insights(variant_df):
+        st.markdown(f"- {line}")
 
-    total_unique_cases = df["case_id"].nunique()
-    exception_pct      = (total_exception_cases / total_unique_cases) * 100 if total_unique_cases > 0 else 0
+    # one-off paths are noise, so they are not eligible to be called the highest risk
+    min_cases = max(2, int(total * 0.01))
+    deviant = variant_df[(variant_df["variant_type"] != "Conformant")
+                         & (variant_df["frequency"] >= min_cases)].copy()
+    if len(deviant):
+        deviant["_risk"] = (0.5 * deviant["avg_cycle_hours"] / (deviant["avg_cycle_hours"].max() + 1e-9)
+                            + 0.5 * deviant["sla_breach_rate"] / (deviant["sla_breach_rate"].max() + 1e-9))
+        worst = deviant.loc[deviant["_risk"].idxmax()]
+        saving = max(0.0, worst["avg_cycle_hours"] - std_hours)
+        st.markdown(finding_card(
+            "Highest-risk deviation",
+            f"{worst['variant_label']} ({worst['variant_type']})",
+            f"{int(worst['frequency'])} {'case' if int(worst['frequency']) == 1 else 'cases'} "
+            f"({worst['frequency'] / total * 100:.0f}%), averaging "
+            f"{worst['avg_cycle_hours']:.1f} h end-to-end with a {worst['sla_breach_rate'] * 100:.0f}% SLA breach rate. "
+            f"If it matched the standard path, each case would save about {saving:.1f} h "
+            f"({saving * worst['frequency']:.0f} h in total). Risk ranking weighs cycle time and breach rate equally.",
+        ), unsafe_allow_html=True)
 
-    if total_exception_cases > 0:
-        st.warning(
-            f"**{total_exception_cases}** exception cases detected (**{exception_pct:.1f}%** of all workflows).\n\n"
-            "Repeated task patterns detected. This indicates rework and process inefficiency.",
-            icon="⚠️"
-        )
-        st.dataframe(
-            exceptions_df,
-            column_config={"case_id": "Case ID", "issue_type": "Issue Type", "affected_task": "Affected Task"},
-            use_container_width=True, hide_index=True,
-        )
+    st.markdown("## Cycle time by variant")
+    chart_df = variant_df[variant_df["frequency"] >= 2].sort_values("avg_cycle_hours", ascending=False)
+    if (variant_df["frequency"] < 2).any():
+        st.caption("Single-case variants are left out here. They are listed under Rare paths above.")
+    fig = px.bar(chart_df, x="variant_label", y="avg_cycle_hours", color="variant_type",
+                 color_discrete_map=VARIANT_COLORS, text="avg_cycle_hours",
+                 hover_data={"frequency": True, "variant_type": False})
+    fig.update_traces(texttemplate="%{text:.1f} h", textposition="outside", cliponaxis=False)
+    fig.update_layout(xaxis_title=None, yaxis_title="Average hours, start to finish", legend_title_text=None)
+    st.plotly_chart(style_fig(fig, 340), width="stretch", config=CHART_CONFIG, theme=None)
+
+    with st.expander(f"Cases with rework or skipped steps ({n_exception_cases:,})"):
+        if exceptions_df.empty:
+            st.write("No cases deviate from the expected step order.")
+        else:
+            counts = exceptions_df.groupby("issue_type")["case_id"].nunique().rename("Cases").reset_index()
+            counts["issue_type"] = counts["issue_type"].map({"loop": "Repeated step (rework)",
+                                                             "deviation": "Out-of-order or skipped step"})
+            st.dataframe(counts.rename(columns={"issue_type": "Issue"}), hide_index=True, width="stretch")
+            readable = exceptions_df.assign(issue_type=exceptions_df["issue_type"].map({
+                "loop": "Repeated step (rework)", "deviation": "Out-of-order or skipped step"}))
+            st.dataframe(readable.rename(columns={"case_id": "Case", "issue_type": "Issue",
+                                                  "affected_task": "Step"}),
+                         hide_index=True, width="stretch")
+
+# Page: Recommendations
+else:
+    st.title("Recommendations")
+    st.markdown('<div class="kicker">What to fix first, why it matters, and a planning target.</div>',
+                unsafe_allow_html=True)
+
+    rec = generate_recommendation(bn_task, float(bn["avg_duration"]), int(bn["executions"]))
+    if has_slow_tail(bn):
+        rec["recommendation_text"] = "Fix the slow runs, not the typical ones: " + slow_tail_action(bn_task, bn)
+    wait_share = bn["avg_wait_before"] / (bn["avg_wait_before"] + bn["avg_duration"]) * 100
+    insight = build_decision_chain(bn_task, float(bn["avg_duration"]), float(wait_share), rec)
+    st.markdown("## Primary bottleneck")
+    st.markdown(chain_card([("Finding", insight["problem"]), ("Cause", insight["cause"]),
+                            ("Action", insight["action"]), ("Target", insight["impact"])]),
+                unsafe_allow_html=True)
+
+    handoff = find_handoff_delay(steps)
+    if handoff:
+        ratio = handoff["work_ratio"]
+        ratio_text = "much more than" if ratio > 50 else f"{ratio:.1f}x" if ratio < 10 else f"{ratio:.0f}x"
+        st.markdown("## Biggest handoff delay")
+        st.markdown(chain_card([
+            ("Finding", f"Cases wait {fmt_minutes(handoff['avg_wait'])} on average before "
+                        f"'{handoff['task']}' starts, {ratio_text} the time spent working on it. "
+                        f"Other steps typically wait {fmt_minutes(handoff['typical_wait'])}."),
+            ("Cause", "This is queueing time, not work: nothing is happening to the case while it waits."),
+            ("Action", handoff_action(handoff["task"], handoff["sla_target"])),
+        ]), unsafe_allow_html=True)
+
+    st.markdown("## Priority order")
+    st.caption("Steps ranked by total time consumed (average duration x number of runs).")
+    for rank, action in enumerate(generate_priority_actions(task_stats, steps=steps), start=1):
+        st.markdown(f"{rank}. {action}")
+
+    st.markdown("## Automation candidates")
+    candidates = [c for c in identify_automation_opportunities(df, task_stats) if c["task"] != bn_task]
+    if candidates:
+        st.markdown(data_table(
+            ["Step", "Why it qualifies", "Suggested approach", "Minutes saved per case"],
+            [[f"<b>{esc(c['task'])}</b>", esc(c["reason"]), esc(c["suggestion"]),
+              f"{c['minutes_saved_per_case']:.0f}"] for c in candidates],
+            numeric={3}), unsafe_allow_html=True)
+        st.caption(f"Savings apply a planning assumption of {ASSUMED_REDUCTION:.0%} to each step's average duration. "
+                   "They are estimates for discussion, not forecasts.")
     else:
-        st.success("No major workflow exceptions detected. Process is stable.", icon="✅")
+        st.write("No other step is both high-volume and slow to start.")
 
-    st.subheader("💡 Exception Insights")
-    if total_exception_cases == 0:
-        st.info("**Process is Healthy.**\n\nNo task loops or sequence deviations detected.", icon="✅")
-    elif exception_pct < 5:
-        st.info(f"**Low Exception Rate Detected ({exception_pct:.1f}%).**\n\nThe process is mostly stable.", icon="💡")
-    else:
-        st.warning(f"**High Exception Rate Detected ({exception_pct:.1f}%).**\n\nProcess inefficiency is significant.", icon="⚠️")
-
-
-elif page == "Risk & Insights":
-    # 1. Smart Insights
-    st.markdown("---")
-    st.header("🧠 Smart Insights")
-
-    avg_val  = task_stats.loc[bottleneck_task, "avg_duration_minutes"]
-    wp_stats = df.groupby("task")[["processing_time_minutes", "waiting_time_minutes"]].mean()
-    bn_wait  = wp_stats.loc[bottleneck_task, "waiting_time_minutes"]
-    bn_total = wp_stats.loc[bottleneck_task].sum()
-    wait_pct = (bn_wait / bn_total) * 100 if bn_total > 0 else 0
-
-    health_data   = calculate_workflow_health(df, bottleneck_pct, total_exception_cases)
-    risk_results  = predict_bottleneck_risk(df, task_stats)
-    rec_data      = generate_recommendation(bottleneck_task, avg_val, int(task_stats.loc[bottleneck_task, "count"]))
-
-    smart_insight = generate_smart_insight(
-        bottleneck_task=bottleneck_task,
-        avg_duration=avg_val,
-        wait_pct=wait_pct,
-        recommendation=rec_data,
-        task_stats=task_stats,
-        health_score=health_data["score"],
-        risk_results=risk_results,
-        total_exception_cases=total_exception_cases,
-        total_cases=df["case_id"].nunique(),
-    )
-
-    with st.container():
-        st.info(
-            f"**Problem:** {smart_insight['problem']}\n\n"
-            f"**Root Cause:** {smart_insight['cause']}\n\n"
-            f"**Recommended Action:** {smart_insight['action']}\n\n"
-            f"**Expected Impact:** {smart_insight['impact']}",
-            icon="💡"
-        )
-        if smart_insight.get("secondary_findings"):
-            with st.expander("📌 Additional findings"):
-                for finding in smart_insight["secondary_findings"]:
-                    st.markdown(f"- {finding}")
-
-    st.markdown("---")
-
-    # 2. Risk Alerts
-    st.subheader("⚠️ Workflow Risk Alerts")
-    high_risks = [r for r in risk_results if r["risk_score"] >= 50]
-
-    if high_risks:
-        for r in high_risks:
-            with st.container():
-                st.warning(
-                    f"**{r['task']}** — Risk Score: **{r['risk_score']} / 100**\n\n{r['explanation']}",
-                    icon="⚠️"
-                )
-                if r.get("factors"):
-                    st.markdown("**Why this risk?**")
-                    for factor in r["factors"]:
-                        st.markdown(f"* {factor}")
-                st.markdown("<br>", unsafe_allow_html=True)
-    else:
-        st.success("No high-risk steps detected.", icon="✅")
-
-    # 3. Priority Actions
-    st.subheader("🎯 Priority Actions")
-    priority_list = generate_priority_actions(task_stats, total_bn_time)
-
-    if priority_list:
-        for i, action in enumerate(priority_list, 1):
-            st.markdown(f"{i}. **{action}**")
-    else:
-        st.info("No immediate priority actions identified.", icon="💡")
-
-    # 4. Automation Opportunities
-    st.markdown("---")
-    st.subheader("⚙️ Automation Opportunities")
-    automation_ops = identify_automation_opportunities(df, task_stats)
-
-    if automation_ops:
-        for op in automation_ops[:3]:
-            with st.expander(f"Opportunity: **{op['task']}**", expanded=True):
-                st.markdown(f"**🔴 Reason:** {op['reason']}")
-                st.markdown(f"**✅ Suggestion:** {op['suggestion']}")
-                if op.get("impact_text"):
-                    st.success(f"**💡 Expected Impact:** {op['impact_text']}")
-    else:
-        st.success("Your process appears highly automated with no major manual delays detected.", icon="⚙️")
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Footer
-# ═══════════════════════════════════════════════════════════════════════════
-st.markdown("---")
-st.markdown(
-    """
-    <div style="text-align: center; color: #888; font-size: 0.85rem; padding: 20px 0;">
-        <strong>AI Workflow Intelligence System</strong><br>
-        Process analytics, bottleneck detection, and optimization insights
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+    st.markdown("## Step risk index")
+    risks = score_step_risk(df, task_stats)
+    st.markdown(data_table(
+        ["Step", "Risk index", "Drivers"],
+        [[f"<b>{esc(r['task'])}</b>", risk_bar(float(r["risk_score"])),
+          esc(", ".join(r["factors"]) or "No single factor stands out")] for r in risks]), unsafe_allow_html=True)
+    st.caption("Weighted heuristic: 50% average duration, 30% variability, 20% volume, each scaled to the "
+               "highest step. It ranks steps; it does not forecast breaches.")

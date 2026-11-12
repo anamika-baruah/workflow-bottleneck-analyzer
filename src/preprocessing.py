@@ -1,186 +1,175 @@
 """
 preprocessing.py
 
-Cleans and enriches raw workflow event logs before analysis.
-Handles timestamp parsing, duration calculation, and basic SLA flagging.
+Cleans raw workflow event logs and derives the fields every analysis needs.
+
+Definitions used throughout the project
+---------------------------------------
+duration_minutes
+    Time the step itself took (end_time - start_time).
+waiting_time_minutes
+    Handoff wait: the gap between the previous step finishing and this step
+    starting, within the same case. The first step of a case has no wait.
+    Both values come straight from the timestamps; nothing is estimated.
 """
+
+from __future__ import annotations
+
+import math
 
 import pandas as pd
 
 
-def preprocess_workflow(df: pd.DataFrame) -> pd.DataFrame:
-    """Clean up the raw workflow log and compute durations.
+def infer_step_order(df: pd.DataFrame) -> list[str]:
+    """Infer the usual step order from the data.
 
-    Does timestamp parsing, drops bad rows, and adds a few useful columns
-    like processing time, waiting time, and SLA violation flags.
+    Each task is ranked by the average position of its first appearance in a
+    case, so the order adapts to any workflow instead of assuming one.
+    """
+    ordered = df.sort_values(["case_id", "start_time"]).copy()
+    ordered["_pos"] = ordered.groupby("case_id").cumcount()
+    first_pos = ordered.groupby(["case_id", "task"])["_pos"].min().reset_index()
+    mean_pos = first_pos.groupby("task")["_pos"].mean()
+    return sorted(mean_pos.index, key=lambda t: (mean_pos[t], t))
+
+
+def default_sla_minutes(df: pd.DataFrame, multiplier: float = 2.0) -> dict[str, int]:
+    """Suggest an SLA target per step: `multiplier` x its median duration.
+
+    Real SLAs come from the business, so this is only a starting point that
+    users can overwrite. Values are rounded up to the next 5 minutes.
+    """
+    durations = (df["end_time"] - df["start_time"]).dt.total_seconds() / 60
+    medians = durations.groupby(df["task"]).median()
+    return {
+        task: max(5, int(math.ceil(median * multiplier / 5) * 5))
+        for task, median in medians.items()
+    }
+
+
+def preprocess_workflow(
+    df: pd.DataFrame,
+    sla_minutes: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """Parse timestamps, drop unusable rows and add duration / wait / SLA fields.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Raw workflow log. Must have at least start_time and end_time columns.
+        Raw log with case_id, task, start_time, end_time.
+    sla_minutes : dict, optional
+        SLA target per task in minutes. Tasks not listed fall back to
+        ``default_sla_minutes``.
 
     Returns
     -------
     pd.DataFrame
-        Cleaned DataFrame with duration_minutes and SLA columns added.
+        Sorted by case and start time. ``df.attrs["quality"]`` holds counts of
+        rows removed and ``df.attrs["sla_minutes"]`` the SLA table in use.
     """
-
-    # don't touch the caller's original data
     df = df.copy()
+    rows_in = len(df)
 
-    # make sure timestamps are actually datetime objects
-    # this might break if timestamps are in a weird format — handle downstream
     for col in ("start_time", "end_time"):
         if not pd.api.types.is_datetime64_any_dtype(df[col]):
             df[col] = pd.to_datetime(df[col], errors="coerce")
 
-    # drop rows where we couldn't parse timestamps — useless for duration math
-    before = len(df)
+    unparseable = int(df[["start_time", "end_time"]].isna().any(axis=1).sum())
     df = df.dropna(subset=["start_time", "end_time"])
-    dropped = before - len(df)
-    if dropped:
-        print(f"⚠️  Dropped {dropped} row(s) with missing timestamps.")
 
-    # compute duration in minutes
-    # timedelta → seconds → minutes
+    # A step that ends before it starts is a data error, not a fast step.
+    reversed_mask = df["end_time"] < df["start_time"]
+    reversed_rows = int(reversed_mask.sum())
+    df = df[~reversed_mask]
+
+    df = df.sort_values(["case_id", "start_time", "end_time"]).reset_index(drop=True)
+
     df["duration_minutes"] = (
-        (df["end_time"] - df["start_time"])
-        .dt.total_seconds()
-        / 60
+        (df["end_time"] - df["start_time"]).dt.total_seconds() / 60
     )
 
-    # guard against reversed timestamps — take abs just in case
-    df["duration_minutes"] = df["duration_minutes"].abs()
+    previous_end = df.groupby("case_id")["end_time"].shift(1)
+    df["waiting_time_minutes"] = (
+        ((df["start_time"] - previous_end).dt.total_seconds() / 60)
+        .clip(lower=0)
+        .fillna(0)
+    )
+    # kept as an explicit name so charts read "processing vs waiting"
+    df["processing_time_minutes"] = df["duration_minutes"]
 
-    # split into processing vs waiting time
-    # using a simple heuristic: active work is ~10-30% of total, rest is queue idle
-    # TODO: improve this with actual activity log data if available
-    import random
-    ratios = [random.uniform(0.1, 0.3) for _ in range(len(df))]
-    df["processing_time_minutes"] = (df["duration_minutes"] * ratios).round(2)
-    df["waiting_time_minutes"] = (df["duration_minutes"] - df["processing_time_minutes"]).round(2)
-
-    # SLA thresholds per task (in minutes) — hardcoded for now
-    # assuming this is a standard sales workflow; generalize later if needed
-    SLA_THRESHOLDS = {
-        "Lead Created": 5,
-        "Lead Reviewed": 30,
-        "Manager Approval": 120,
-        "Proposal Sent": 60,
-        "Deal Closed": 60
-    }
-
-    df["sla_threshold"] = df["task"].map(SLA_THRESHOLDS).fillna(99999)
+    sla = default_sla_minutes(df)
+    if sla_minutes:
+        sla.update({k: float(v) for k, v in sla_minutes.items() if k in sla})
+    df["sla_threshold"] = df["task"].map(sla)
     df["sla_violation"] = df["duration_minutes"] > df["sla_threshold"]
 
-    df = df.reset_index(drop=True)
-
+    df.attrs["quality"] = {
+        "rows_in": rows_in,
+        "rows_used": len(df),
+        "unparseable_timestamps": unparseable,
+        "end_before_start": reversed_rows,
+    }
+    df.attrs["sla_minutes"] = sla
     return df
 
 
 def compute_case_durations(df: pd.DataFrame) -> pd.DataFrame:
-    """Calculate total end-to-end time per case.
-
-    Finds the gap between the earliest start and the latest end for each
-    workflow instance. Good for understanding overall cycle time.
-    """
-    # first start and last end per case
+    """End-to-end time per case: earliest start to latest end."""
     case_aggs = df.groupby("case_id").agg(
         first_start=("start_time", "min"),
         last_end=("end_time", "max"),
     )
-
     total_mins = (case_aggs["last_end"] - case_aggs["first_start"]).dt.total_seconds() / 60
-
-    case_durations = pd.DataFrame({
-        "case_id": case_aggs.index,
-        "total_duration_minutes": total_mins.abs(),
-    }).reset_index(drop=True)
-
-    return case_durations
+    return pd.DataFrame(
+        {"case_id": case_aggs.index, "total_duration_minutes": total_mins.to_numpy()}
+    ).reset_index(drop=True)
 
 
-def detect_exception_flows(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    """Find loops (rework) and deviations (out-of-order steps) in workflow cases.
+def detect_exception_flows(
+    df: pd.DataFrame,
+    expected_order: list[str] | None = None,
+) -> tuple[pd.DataFrame, int]:
+    """Find rework loops and out-of-sequence steps.
 
-    Loops = a task appears more than once in the same case.
-    Deviations = tasks run out of expected sequence.
+    * loop      - a step appears more than once in a case
+    * deviation - the case starts on the wrong step, or a step does not follow
+                  the expected order (skipped or reordered steps)
 
-    Assumes workflow order is mostly: Lead Created → Lead Reviewed →
-    Manager Approval → Proposal Sent → Deal Closed.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Workflow data with case_id, task, start_time.
-
-    Returns
-    -------
-    tuple[pd.DataFrame, int]
-        Exception records DataFrame + count of unique affected cases.
+    ``expected_order`` defaults to the order inferred from the data.
     """
-    exceptions = []
+    if expected_order is None:
+        expected_order = infer_step_order(df)
+    order_index = {task: i for i, task in enumerate(expected_order)}
 
-    # expected sequence — assuming workflow order is mostly correct
-    expected_order = [
-        "Lead Created",
-        "Lead Reviewed",
-        "Manager Approval",
-        "Proposal Sent",
-        "Deal Closed"
-    ]
-    expected_order_map = {task: i for i, task in enumerate(expected_order)}
+    exceptions: list[dict] = []
+    ordered = df.sort_values(["case_id", "start_time"])
 
-    df_sorted = df.sort_values(by=["case_id", "start_time"])
-
-    for case_id, group in df_sorted.groupby("case_id"):
+    for case_id, group in ordered.groupby("case_id"):
         tasks = group["task"].tolist()
         if not tasks:
             continue
 
-        # check for loops — task shows up more than once
-        seen_tasks = set()
-        for t in tasks:
-            if t in seen_tasks:
-                exceptions.append({
-                    "case_id": case_id,
-                    "issue_type": "loop",
-                    "affected_task": t
-                })
-            seen_tasks.add(t)
+        seen: set[str] = set()
+        for task in tasks:
+            if task in seen:
+                exceptions.append(
+                    {"case_id": case_id, "issue_type": "loop", "affected_task": task}
+                )
+            seen.add(task)
 
-        # check if the process started at the right step
-        if expected_order_map.get(tasks[0], -1) != 0:
-            exceptions.append({
-                "case_id": case_id,
-                "issue_type": "deviation",
-                "affected_task": tasks[0]
-            })
+        if order_index.get(tasks[0], -1) != 0:
+            exceptions.append(
+                {"case_id": case_id, "issue_type": "deviation", "affected_task": tasks[0]}
+            )
 
-        # check each step transition — a valid move is exactly one step forward
-        for i in range(1, len(tasks)):
-            prev_t = tasks[i - 1]
-            curr_t = tasks[i]
+        for prev_task, task in zip(tasks, tasks[1:]):
+            if task == prev_task:
+                continue
+            if order_index.get(task, -1) != order_index.get(prev_task, -1) + 1:
+                exceptions.append(
+                    {"case_id": case_id, "issue_type": "deviation", "affected_task": task}
+                )
 
-            if curr_t == prev_t:
-                continue  # duplicate handled by loop check above
-
-            prev_idx = expected_order_map.get(prev_t, -1)
-            curr_idx = expected_order_map.get(curr_t, -1)
-
-            if curr_idx != prev_idx + 1:
-                exceptions.append({
-                    "case_id": case_id,
-                    "issue_type": "deviation",
-                    "affected_task": curr_t
-                })
-
-    exceptions_df = pd.DataFrame(exceptions)
-
-    if exceptions_df.empty:
-        exceptions_df = pd.DataFrame(columns=["case_id", "issue_type", "affected_task"])
-        total_exception_count = 0
-    else:
-        total_exception_count = exceptions_df["case_id"].nunique()
-
-    return exceptions_df, total_exception_count
+    columns = ["case_id", "issue_type", "affected_task"]
+    exceptions_df = pd.DataFrame(exceptions, columns=columns)
+    return exceptions_df, int(exceptions_df["case_id"].nunique())

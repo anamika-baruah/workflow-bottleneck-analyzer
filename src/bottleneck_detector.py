@@ -1,43 +1,33 @@
 """
 bottleneck_detector.py
 
-Figures out which task is slowing down the whole workflow.
-Uses average duration as the main signal — simple but effective.
+Ranks workflow steps and turns the numbers into plain-language findings.
+The bottleneck is the step with the highest average duration; step
+statistics also include handoff wait and SLA breach rate for context.
 """
 
+from __future__ import annotations
+
 import pandas as pd
+
+from src.formatting import fmt_minutes
 
 
 def detect_bottlenecks(
     df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, str, float, float]:
-    """Detect the primary bottleneck task and measure its impact.
+    """Return (task_stats, bottleneck_task, bottleneck_total_minutes, bottleneck_pct).
 
-    The bottleneck is the task with the highest average duration — the step
-    where work items spend the most time before moving forward.
-
-    Once found, we calculate how much of the total workflow time it eats up.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Preprocessed workflow log. Needs 'task' and 'duration_minutes'.
-
-    Returns
-    -------
-    tuple[pd.DataFrame, str, float, float]
-        task_stats, bottleneck_task name, total time in bottleneck, bottleneck %.
+    ``bottleneck_pct`` is the step's share of all step time (not elapsed time).
     """
-
     required = {"task", "duration_minutes"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(
-            f"Missing required columns for bottleneck detection: "
-            f"{', '.join(sorted(missing))}"
+            "Missing required columns for bottleneck detection: "
+            + ", ".join(sorted(missing))
         )
 
-    # compute per-task stats — avg, median, and count
     task_stats = (
         df.groupby("task")["duration_minutes"]
         .agg(
@@ -45,161 +35,179 @@ def detect_bottlenecks(
             median_duration_minutes="median",
             count="count",
         )
+        .round(2)
+        .sort_values("avg_duration_minutes", ascending=False)
     )
 
-    task_stats = task_stats.round(2)
-    task_stats = task_stats.sort_values("avg_duration_minutes", ascending=False)
-
-    # highest avg duration = bottleneck
-    # median is there for sanity check — high mean with low median often means outliers
     bottleneck_task: str = task_stats["avg_duration_minutes"].idxmax()
-
-    # how much total time does this bottleneck consume across all cases?
-    total_bn_time: float = round(
-        df.loc[df["task"] == bottleneck_task, "duration_minutes"].sum(), 2
+    total_bn_time = round(
+        float(df.loc[df["task"] == bottleneck_task, "duration_minutes"].sum()), 2
     )
-
-    total_workflow_time: float = df["duration_minutes"].sum()
-
-    # guard against divide-by-zero on empty data
-    if total_workflow_time > 0:
-        bottleneck_pct: float = round(
-            (total_bn_time / total_workflow_time) * 100, 2
-        )
-    else:
-        bottleneck_pct = 0.0
-
-    print("📊  Task Duration Statistics (sorted by avg duration):\n")
-    print(task_stats.to_string())
-    print(
-        f"\n🔴  Detected bottleneck → '{bottleneck_task}' "
-        f"(avg {task_stats.loc[bottleneck_task, 'avg_duration_minutes']:.2f} min)"
-    )
-    print(
-        f"📌  Impact: {total_bn_time:,.0f} min total "
-        f"({bottleneck_pct:.1f}% of all workflow time)"
-    )
+    total_time = float(df["duration_minutes"].sum())
+    bottleneck_pct = round(total_bn_time / total_time * 100, 2) if total_time > 0 else 0.0
     return task_stats, bottleneck_task, total_bn_time, bottleneck_pct
+
+
+def summarize_steps(df: pd.DataFrame, order: list[str] | None = None) -> pd.DataFrame:
+    """One row per step: volume, duration, handoff wait and SLA breach rate."""
+    summary = df.groupby("task").agg(
+        executions=("duration_minutes", "count"),
+        avg_duration=("duration_minutes", "mean"),
+        median_duration=("duration_minutes", "median"),
+        p90_duration=("duration_minutes", lambda s: s.quantile(0.9)),
+        avg_wait_before=("waiting_time_minutes", "mean"),
+        sla_target=("sla_threshold", "first"),
+        sla_breach_pct=("sla_violation", lambda s: s.mean() * 100),
+        total_hours=("duration_minutes", lambda s: s.sum() / 60),
+    )
+    if order:
+        summary = summary.reindex([t for t in order if t in summary.index])
+    return summary
 
 
 def generate_bottleneck_insight(
     bottleneck_task: str, avg_duration: float, num_executions: int
 ) -> tuple[str, str]:
-    """Write a plain-language explanation of why a task is the bottleneck.
-
-    Returns a short description and a suggested fix.
-    """
+    """Short explanation and suggested direction for the bottleneck step."""
     explanation = (
-        f"The '{bottleneck_task}' step is slowing down the overall process. "
-        f"It takes an average of {avg_duration:,.1f} minutes to complete, "
-        f"and it has been executed {num_executions:,} times. This high duration "
-        f"causes a backlog in the workflow timeline."
+        f"'{bottleneck_task}' averages {avg_duration:,.1f} minutes per execution "
+        f"across {num_executions:,} executions, the longest of any step."
     )
-
-    task_lower = bottleneck_task.lower()
-    if "approval" in task_lower or "review" in task_lower:
-        improvement = "Consider introducing automated approval rules for low-risk cases or adding additional reviewers."
-    elif "create" in task_lower or "generat" in task_lower:
-        improvement = "Consider pre-fetching required data or using templates to accelerate generation."
+    name = bottleneck_task.lower()
+    if "approval" in name or "review" in name:
+        improvement = "Add approval rules for low-risk cases or review in parallel."
+    elif "create" in name or "generat" in name:
+        improvement = "Pre-fill required data or use templates to speed this step up."
     else:
-        improvement = "Consider automating parts of this step or reallocating resources to reduce the workload."
-
+        improvement = "Look for manual touchpoints that can be automated or reassigned."
     return explanation, improvement
 
 
 def generate_recommendation(
     task_name: str, avg_duration: float, execution_count: int
 ) -> dict:
-    """Build a context-aware recommendation for the bottleneck task.
+    """Suggest an action for a step and a planning target for improvement.
 
-    Uses task name + duration/frequency signals to produce a concise suggestion.
-    Simple heuristic — not a model, but works well for common patterns.
+    ``target_reduction_pct`` is a planning assumption, not a prediction: it is
+    higher when the step is both slow and frequent. The dashboard's what-if
+    control lets the user test other values.
     """
-    task_lower = task_name.lower()
-    parts: list[str] = []
-
-    # pick suggestion based on what kind of task this is
-    if "approval" in task_lower:
-        parts.append(
-            "Automate approval for low-risk cases or introduce parallel reviewers."
-        )
-    elif "review" in task_lower:
-        parts.append(
-            "Reduce review cycles or introduce clear guidelines to speed up decision making."
-        )
-    elif "routing" in task_lower or "assignment" in task_lower:
-        parts.append(
-            "Implement automated routing using business rules or AI-based classification."
-        )
+    name = task_name.lower()
+    if "approval" in name:
+        action = "Auto-approve low-risk cases and add a second approver to cover peaks."
+    elif "review" in name:
+        action = "Set clear review criteria and run reviews in parallel."
+    elif "routing" in name or "assignment" in name:
+        action = "Route automatically using business rules."
     else:
-        parts.append(
-            f"Consider redesigning or automating the '{task_name}' step to reduce manual effort."
-        )
+        action = f"Reduce manual effort in '{task_name}' by simplifying or automating it."
 
-    # layer in data-driven context signals
-    signals_triggered = 0
-
-    if avg_duration > 300:  # this is where most delays come from — flag it hard
-        parts.append(
-            "This step is significantly slower than others and requires immediate intervention."
-        )
-        signals_triggered += 1
-    elif avg_duration > 60:
-        parts.append(
-            "Duration is above average — reducing manual intervention here will yield measurable gains."
-        )
-        signals_triggered += 1
-
+    signals = 0
+    if avg_duration > 60:
+        signals += 1
     if execution_count > 100:
-        # high volume means even small speed-ups compound quickly
-        parts.append(
-            "This step occurs frequently, so even a small speed-up will have a high compound impact."
-        )
-        signals_triggered += 1
+        signals += 1
+    target = {0: 15, 1: 20, 2: 25}[signals]
+    return {"recommendation_text": action, "target_reduction_pct": target}
 
-    recommendation_text = " ".join(parts)
 
-    # estimated savings scale with how many signals fired
-    if signals_triggered >= 2:
-        estimated_savings = "25–35%"
-    elif signals_triggered == 1:
-        estimated_savings = "20–30%"
-    else:
-        estimated_savings = "15–25%"
+def find_handoff_delay(steps: pd.DataFrame) -> dict | None:
+    """Return the step with an unusually long wait before it starts, or None.
 
+    A wait only counts as a finding when it is at least an hour and at least
+    twice the typical wait of the other steps. Without that rule a chart or a
+    recommendation would single out a step for a difference of a few minutes.
+    """
+    waits = steps["avg_wait_before"]
+    if len(waits) < 3:
+        return None
+    task = waits.idxmax()
+    wait = float(waits[task])
+    typical = float(waits.drop(task).median())
+    if wait < 60 or wait < 2 * max(typical, 1.0):
+        return None
+    work = float(steps.loc[task, "avg_duration"])
     return {
-        "recommendation_text": recommendation_text,
-        "estimated_savings": estimated_savings,
+        "task": task,
+        "avg_wait": wait,
+        "typical_wait": typical,
+        "work_ratio": wait / work if work > 0 else float("inf"),
+        "sla_target": float(steps.loc[task, "sla_target"]),
     }
 
 
-def generate_priority_actions(task_stats: pd.DataFrame, total_bn_time: float) -> list[str]:
-    """Return the top 3 action items ranked by aggregate time wasted.
+def handoff_action(task: str, sla_target: float) -> str:
+    """Suggested fix for a long queue in front of a step."""
+    name = task.lower()
+    if any(word in name for word in ("assign", "dispatch", "rout")):
+        return ("Assign automatically on arrival (round-robin or skill-based) and alert "
+                "when an item sits unassigned for longer than the SLA target.")
+    if any(word in name for word in ("approv", "review", "confirm")):
+        return ("Send automatic reminders, name a backup owner, and escalate items still "
+                f"waiting after {fmt_minutes(sla_target)}.")
+    return ("Make ownership explicit, alert on items waiting longer than the SLA target, "
+            "and review capacity at this handoff.")
 
-    Priority score = avg_duration * count — basically total time eaten by that task.
+
+def has_slow_tail(row) -> bool:
+    """True when the slowest 10% of runs take at least 2.5x the median."""
+    return bool(row["median_duration"] > 0 and row["p90_duration"] >= 2.5 * row["median_duration"])
+
+
+def slow_tail_action(task: str, row) -> str:
+    """Advice for a step whose problem is a few very slow runs, not every run."""
+    text = (
+        f"a slow tail ({fmt_minutes(row['p90_duration'])} at the 90th percentile against a "
+        f"{fmt_minutes(row['median_duration'])} median). Escalate runs that pass "
+        f"{fmt_minutes(row['sla_target'])} and look for what the slowest cases have in common."
+    )
+    name = task.lower()
+    if "approval" in name:
+        text += " Auto-approve low-risk cases."
+    elif "review" in name:
+        text += " Review in parallel."
+    return text
+
+
+def generate_priority_actions(
+    task_stats: pd.DataFrame,
+    total_bn_time: float = 0.0,
+    steps: pd.DataFrame | None = None,
+) -> list[str]:
+    """Top three steps by total time consumed (average x executions).
+
+    When the per-step summary is supplied, each action names what is actually
+    wrong with that step (a queue before it, or a slow tail) instead of a
+    generic suggestion.
     """
     if task_stats.empty:
         return []
-
-    priority_df = task_stats.copy()
-    # total time spent = best proxy for where intervention has the most impact
-    priority_df["priority_score"] = priority_df["avg_duration_minutes"] * priority_df["count"]
-    priority_df = priority_df.sort_values("priority_score", ascending=False)
-
+    ranked = (task_stats["avg_duration_minutes"] * task_stats["count"]).sort_values(
+        ascending=False
+    )
     actions = []
+    for task in ranked.head(3).index:
+        name = task.lower()
+        row = steps.loc[task] if steps is not None and task in steps.index else None
 
-    for task_name in priority_df.head(3).index:
-        task_lower = task_name.lower()
-
-        if "approval" in task_lower:
-            actions.append("Automate approval for low-risk cases")
-        elif "review" in task_lower:
-            actions.append("Introduce parallel reviewers to reduce wait time")
-        elif "create" in task_lower or "generat" in task_lower:
-            actions.append("Use templates to reduce manual generation steps")
-        elif "assignment" in task_lower or "routing" in task_lower:
-            actions.append("Implement automated rule-based task routing")
+        if row is not None and row["avg_wait_before"] >= 60 and row["avg_wait_before"] >= row["avg_duration"]:
+            actions.append(
+                f"{task}: cases wait {fmt_minutes(row['avg_wait_before'])} before it starts, "
+                f"more than the {fmt_minutes(row['avg_duration'])} of work. "
+                + handoff_action(task, float(row["sla_target"]))
+            )
+        elif row is not None and has_slow_tail(row):
+            actions.append(f"{task}: " + slow_tail_action(task, row))
+        elif row is not None:
+            actions.append(
+                f"{task}: takes {fmt_minutes(row['avg_duration'])} per run with "
+                f"{fmt_minutes(row['avg_wait_before'])} of waiting before it, and neither stands "
+                "out. Worth a look after the steps above."
+            )
+        elif "approval" in name:
+            actions.append(f"{task}: auto-approve low-risk cases")
+        elif "review" in name:
+            actions.append(f"{task}: review in parallel")
         else:
-            actions.append(f"Standardize and automate the '{task_name}' process")
-
-    return actions[:3]
+            actions.append(f"{task}: standardise and automate repeat work")
+    return actions

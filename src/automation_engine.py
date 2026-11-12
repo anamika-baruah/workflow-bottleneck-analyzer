@@ -1,78 +1,74 @@
 """
 automation_engine.py
 
-Spots tasks that would benefit most from automation.
-Looks for high-frequency steps with a lot of idle wait time — classic RPA candidates.
+Shortlists steps that are frequent and slow to start, which are the usual
+candidates for automation or rule-based routing.
 """
+
+from __future__ import annotations
 
 import pandas as pd
 
+# Planning assumption used for every estimate; results are labelled as such.
+ASSUMED_REDUCTION = 0.25
 
-def identify_automation_opportunities(df: pd.DataFrame, stats_df: pd.DataFrame) -> list[dict]:
-    """Find the tasks most worth automating and explain why.
 
-    Targets steps that are both frequent AND slow to wait on —
-    those are usually the ones with the most manual overhead.
+def identify_automation_opportunities(
+    df: pd.DataFrame,
+    stats_df: pd.DataFrame,
+    assumed_reduction: float = ASSUMED_REDUCTION,
+) -> list[dict]:
+    """Return candidate steps, ordered by (executions x average handoff wait).
+
+    A step qualifies when its volume and its handoff wait are both at or above
+    the process average. Time-saved figures apply ``assumed_reduction`` to the
+    step's average duration and are deterministic for the same input.
     """
     if df.empty or stats_df.empty:
         return []
 
-    # average waiting time per task — if available
     if "waiting_time_minutes" in df.columns:
         wait_stats = df.groupby("task")["waiting_time_minutes"].mean()
     else:
-        wait_stats = pd.Series(0, index=stats_df.index)
+        wait_stats = pd.Series(0.0, index=stats_df.index)
 
-    # anything above-average in both frequency and wait time is a candidate
     avg_freq = stats_df["count"].mean()
     avg_wait = wait_stats.mean()
-
     opportunities = []
 
     for task in stats_df.index:
         count = stats_df.loc[task, "count"]
-        wait = wait_stats.get(task, 0)
+        wait = wait_stats.get(task, 0.0)
+        if count < avg_freq or wait < avg_wait:
+            continue
 
-        if count >= avg_freq and wait >= avg_wait:
-            task_lower = task.lower()
+        name = task.lower()
+        if "approval" in name:
+            reason = "High volume with long waits for a human decision."
+            solution = "Introduce rule-based auto-approval for low-risk cases."
+        elif "review" in name:
+            reason = "Repeated review cycles hold cases back."
+            solution = "Standardise review criteria or review in parallel."
+        elif "ticket" in name or "routing" in name or "assign" in name:
+            reason = "High-volume assignment work adds overhead and queue time."
+            solution = "Route automatically with rule-based classification."
+        else:
+            reason = "High volume and above-average waiting before this step starts."
+            solution = f"Reduce manual touchpoints in '{task}' with templates or scripted automation."
 
-            # pick a suggestion that fits the task type
-            if "approval" in task_lower:
-                reason = "High delay and manual dependency on human reviewers."
-                solution = "Introduce rule-based auto-approval for low-value or low-risk cases."
-            elif "review" in task_lower:
-                reason = "Repetitive decision-making cycles slowing down cases."
-                solution = "Implement AI-driven document review or parallelize the human review process."
-            elif "ticket" in task_lower or "routing" in task_lower:
-                reason = "High volume of assignment tasks adds significant overhead."
-                solution = "Automate routing using rule-based classification or machine learning."
-            elif "assignment" in task_lower or "allocation" in task_lower:
-                reason = "Manual resource allocation causing workflow fragmentation."
-                solution = "Use automated workflow triggers to assign tasks based on resource availability."
-            else:
-                reason = "High frequency and wait time indicate a process bottleneck."
-                solution = f"Redesign the '{task}' step to reduce manual touchpoints through RPA or script automation."
+        avg_duration = stats_df.loc[task, "avg_duration_minutes"]
+        minutes_saved = avg_duration * assumed_reduction
+        opportunities.append({
+            "task": task,
+            "reason": reason,
+            "suggestion": solution,
+            "impact_text": (
+                f"At an assumed {assumed_reduction:.0%} reduction: "
+                f"about {minutes_saved:,.0f} minutes saved per case"
+            ),
+            "minutes_saved_per_case": round(float(minutes_saved), 1),
+            "impact_score": float(count * wait),
+        })
 
-            # rough impact estimate — not precise, but gives a ballpark
-            # TODO: make this more data-driven if we get historical improvement data
-            import random
-            reduction_pct = random.randint(20, 30)
-            avg_duration = stats_df.loc[task, "avg_duration_minutes"]
-            minutes_saved = (avg_duration * reduction_pct) / 100
-
-            impact_text = (
-                f"Reduce delay by ~{reduction_pct}% "
-                f"(~{minutes_saved:,.1f} minutes per case)"
-            )
-
-            opportunities.append({
-                "task": task,
-                "reason": reason,
-                "suggestion": solution,
-                "impact_text": impact_text,
-                "impact_score": count * wait  # higher = more worth fixing
-            })
-
-    # surface the highest-impact ones first
-    opportunities.sort(key=lambda x: x["impact_score"], reverse=True)
+    opportunities.sort(key=lambda o: o["impact_score"], reverse=True)
     return opportunities

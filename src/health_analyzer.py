@@ -1,84 +1,87 @@
 """
 health_analyzer.py
 
-Produces a single 0-100 score that summarizes how well the workflow is running.
-Combines SLA compliance, bottleneck intensity, exceptions, and idle time.
+A single 0-100 index summarising how smoothly a process runs.
+
+This is a heuristic index, not a statistical model: four penalties with fixed
+weights are subtracted from 100. The weights are exposed in ``WEIGHTS`` so
+they can be changed or discussed with a client.
 """
 
+from __future__ import annotations
+
 import pandas as pd
+
+WEIGHTS = {
+    "SLA breaches": 0.30,
+    "Bottleneck concentration": 0.30,
+    "Rework and deviations": 0.20,
+    "Handoff waiting": 0.20,
+}
 
 
 def compute_health_score(
     df: pd.DataFrame,
     bottleneck_pct: float,
-    total_exception_cases: int
+    total_exception_cases: int,
 ) -> dict:
-    """Compute overall workflow health on a 0-100 scale.
+    """Score workflow health from 0 (poor) to 100 (smooth).
 
-    Score is built by penalizing four things:
-    - SLA violations (30%)
-    - Bottleneck impact (30%)
-    - Exception rate (20%)
-    - Waiting time ratio (20%)
-
-    100 = everything running smoothly, 0 = complete chaos.
+    Inputs, all expressed as percentages:
+    * SLA breaches - share of step executions over their SLA target
+    * Bottleneck concentration - how far the slowest step's share of total
+      step time exceeds an even split across steps
+    * Rework and deviations - share of cases with a loop or skipped step
+    * Handoff waiting - share of elapsed time spent waiting between steps
     """
     if df.empty:
-        return {"score": 0, "status": "No Data", "interpretation": "No data available."}
+        return {"score": 0.0, "status": "No data", "interpretation": "No data available.",
+                "top_contributors": [], "metrics": {}}
 
-    # quick check for SLA breaches
-    sla_violation_rate = (df["sla_violation"].sum() / len(df)) * 100
+    sla_rate = df["sla_violation"].mean() * 100
 
-    # bottleneck_pct already tells us how dominant the worst step is
-    bottleneck_score = bottleneck_pct
+    n_steps = df["task"].nunique()
+    even_share = 100 / n_steps if n_steps else 100
+    if n_steps > 1:
+        concentration = max(0.0, bottleneck_pct - even_share) / (100 - even_share) * 100
+    else:
+        concentration = 0.0
 
-    # what % of cases hit some kind of exception?
-    total_cases = df["case_id"].nunique()
-    exception_rate = (total_exception_cases / total_cases) * 100 if total_cases > 0 else 0
+    n_cases = df["case_id"].nunique()
+    exception_rate = total_exception_cases / n_cases * 100 if n_cases else 0.0
 
-    # how much of total time is just waiting in a queue vs. actual work?
-    total_duration = df["duration_minutes"].sum()
-    total_waiting = df["waiting_time_minutes"].sum()
-    waiting_ratio = (total_waiting / total_duration) * 100 if total_duration > 0 else 0
+    work = df["duration_minutes"].sum()
+    wait = df["waiting_time_minutes"].sum()
+    wait_ratio = wait / (work + wait) * 100 if (work + wait) > 0 else 0.0
 
-    # weighted penalties — each pulls the score down
-    penalties = [
-        ("SLA violation rate", sla_violation_rate * 0.3),
-        ("Bottleneck impact", bottleneck_score * 0.3),
-        ("Workflow exceptions", exception_rate * 0.2),
-        ("Waiting-to-processing ratio", waiting_ratio * 0.2)
+    components = {
+        "SLA breaches": sla_rate,
+        "Bottleneck concentration": concentration,
+        "Rework and deviations": exception_rate,
+        "Handoff waiting": wait_ratio,
+    }
+    penalties = {name: value * WEIGHTS[name] for name, value in components.items()}
+    score = max(0.0, min(100.0, 100 - sum(penalties.values())))
+
+    drivers = sorted(penalties, key=penalties.get, reverse=True)
+    top_contributors = [
+        f"{name}: {components[name]:.0f}%" for name in drivers[:2] if penalties[name] > 0
     ]
 
-    total_penalty = sum(p[1] for p in penalties)
-    health_score = max(0, min(100, 100 - total_penalty))
-
-    # surface the top 2 things dragging the score down
-    sorted_penalties = sorted(penalties, key=lambda x: x[1], reverse=True)
-    top_contributors = [p[0] for p in sorted_penalties if p[1] > 0][:2]
-
-    if health_score >= 80:
-        status = "Healthy"
-        interpretation = "Workflow is performing optimally with minimal delays and high compliance."
-    elif health_score >= 50:
-        status = "Moderate"
-        interpretation = "Workflow is moderately efficient but affected by specific operational constraints."
+    if score >= 80:
+        status, interpretation = "Healthy", "Few delays or deviations; the process runs close to plan."
+    elif score >= 60:
+        status, interpretation = "Needs attention", "Generally working, with specific steps or paths losing time."
     else:
-        status = "Critical"
-        interpretation = "Workflow efficiency is low. Significant bottlenecks and non-compliance detected."
+        status, interpretation = "At risk", "Significant delay, rework or SLA pressure across the process."
 
     return {
-        "score": round(health_score, 1),
+        "score": round(score, 1),
         "status": status,
         "interpretation": interpretation,
         "top_contributors": top_contributors,
-        "metrics": {
-            "sla_viol_rate": round(sla_violation_rate, 1),
-            "btl_impact": round(bottleneck_score, 1),
-            "exc_rate": round(exception_rate, 1),
-            "wait_ratio": round(waiting_ratio, 1)
-        }
+        "metrics": {k: float(round(v, 1)) for k, v in components.items()},
     }
 
 
-# keep backward-compatible alias — dashboard imports calculate_workflow_health
 calculate_workflow_health = compute_health_score

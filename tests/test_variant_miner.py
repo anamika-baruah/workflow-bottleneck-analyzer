@@ -18,11 +18,12 @@ from src.variant_miner import (
     mine_variants,
     tag_variant_type,
     score_variants,
+    generate_variant_insights,
     generate_variant_recommendations,
 )
 
 
-# ───────────────────────────── fixtures ──────────────────────────────────────
+# fixtures
 
 @pytest.fixture
 def sample_event_log():
@@ -59,7 +60,7 @@ def standard_path():
     return ["A", "B", "C"]
 
 
-# ──────────────────── build_case_fingerprints tests ─────────────────────────
+# build_case_fingerprints tests
 
 class TestBuildCaseFingerprints:
 
@@ -120,7 +121,7 @@ class TestBuildCaseFingerprints:
         assert result.iloc[0]["fingerprint"] == "A|B|C"
 
 
-# ──────────────────────── mine_variants tests ───────────────────────────────
+# mine_variants tests
 
 class TestMineVariants:
 
@@ -162,7 +163,7 @@ class TestMineVariants:
         ]
 
 
-# ──────────────────── tag_variant_type tests ────────────────────────────────
+# tag_variant_type tests
 
 class TestTagVariantType:
 
@@ -190,7 +191,7 @@ class TestTagVariantType:
         assert tag_variant_type("B", standard_path) == "Skip"
 
 
-# ──────────────────── score_variants tests ──────────────────────────────────
+# score_variants tests
 
 class TestScoreVariants:
 
@@ -258,7 +259,7 @@ class TestScoreVariants:
             assert round(row["avg_wait_ratio"], 4) == row["avg_wait_ratio"]
 
 
-# ────────────── generate_variant_recommendations tests ──────────────────────
+# generate_variant_recommendations tests
 
 class TestGenerateVariantRecommendations:
 
@@ -282,46 +283,86 @@ class TestGenerateVariantRecommendations:
         vdf = self._make_variant_df("Conformant")
         result = generate_variant_recommendations(vdf)
         rec = result.iloc[0]["recommendation"]
-        assert "optimal workflow path" in rec
+        assert "most common path" in rec
 
     def test_rework_loop_text(self):
         vdf = self._make_variant_df("Rework loop")
         result = generate_variant_recommendations(vdf)
         rec = result.iloc[0]["recommendation"]
-        assert "Repeated steps" in rec
-        assert "validation gates" in rec
+        assert "repeat steps" in rec
+        assert "Add a check before the repeated step" in rec
 
     def test_skip_text(self):
         vdf = self._make_variant_df("Skip")
         result = generate_variant_recommendations(vdf)
         rec = result.iloc[0]["recommendation"]
-        assert "bypassed" in rec
+        assert "steps are skipped" in rec
 
     def test_extended_text(self):
         vdf = self._make_variant_df("Extended")
         result = generate_variant_recommendations(vdf)
         rec = result.iloc[0]["recommendation"]
-        assert "Extra steps" in rec
+        assert "outside the standard sequence" in rec
 
-    def test_cycle_time_context_triggered(self):
+    def test_slower_variant_is_compared_with_standard_path(self):
+        vdf = pd.DataFrame({
+            "variant_label": ["Variant A", "Variant B"],
+            "variant_type": ["Conformant", "Rework loop"],
+            "avg_cycle_hours": [10.0, 25.0],
+            "sla_breach_rate": [0.1, 0.1],
+            "avg_wait_ratio": [0.2, 0.2],
+            "frequency": [20, 10],
+        })
+        rec = generate_variant_recommendations(vdf).iloc[1]["recommendation"]
+        assert "15.0h longer than the standard path" in rec
+        assert "25.0h vs 10.0h" in rec
+
+    def test_faster_variant_is_not_called_slow(self):
+        """A path that skips steps and finishes sooner must not be described as a delay."""
+        vdf = pd.DataFrame({
+            "variant_label": ["Variant A", "Variant B"],
+            "variant_type": ["Conformant", "Skip"],
+            "avg_cycle_hours": [18.0, 12.0],
+            "sla_breach_rate": [0.1, 0.1],
+            "avg_wait_ratio": [0.2, 0.2],
+            "frequency": [20, 10],
+        })
+        rec = generate_variant_recommendations(vdf).iloc[1]["recommendation"]
+        assert "6.0h faster than the standard path" in rec
+        assert "significant delay" not in rec
+        assert "longer than" not in rec
+
+    def test_long_cycle_alone_no_longer_triggers_delay_text(self):
         vdf = self._make_variant_df("Conformant", avg_cycle=15.0)
+        rec = generate_variant_recommendations(vdf).iloc[0]["recommendation"]
+        assert "significant delay" not in rec
+
+    def test_waiting_on_deviant_path_is_compared_with_standard(self):
+        vdf = pd.DataFrame({
+            "variant_label": ["Variant A", "Variant B", "Variant C"],
+            "variant_type": ["Conformant", "Rework loop", "Skip"],
+            "avg_cycle_hours": [10.0, 10.0, 10.0],
+            "sla_breach_rate": [0.0, 0.0, 0.0],
+            "avg_wait_ratio": [0.55, 0.58, 0.80],
+            "frequency": [20, 10, 5],
+        })
         result = generate_variant_recommendations(vdf)
-        rec = result.iloc[0]["recommendation"]
-        assert "15.0h" in rec
-        assert "significant delay" in rec
+        assert "against 55% on the standard path" not in result.iloc[1]["recommendation"]  # +3 points only
+        assert "against 55% on the standard path" in result.iloc[2]["recommendation"]
 
     def test_sla_breach_context_triggered(self):
         vdf = self._make_variant_df("Conformant", sla_rate=0.55)
         result = generate_variant_recommendations(vdf)
         rec = result.iloc[0]["recommendation"]
         assert "55%" in rec
-        assert "reliability risk" in rec
+        assert "SLA breach rate of 55% is high" in rec
 
     def test_wait_ratio_context_triggered(self):
         vdf = self._make_variant_df("Conformant", wait_ratio=0.65)
         result = generate_variant_recommendations(vdf)
         rec = result.iloc[0]["recommendation"]
-        assert "idle waiting" in rec
+        assert "waiting between steps" in rec
+        assert "65%" in rec
 
     def test_no_context_below_thresholds(self):
         vdf = self._make_variant_df("Conformant", avg_cycle=5.0, sla_rate=0.1,
@@ -329,7 +370,7 @@ class TestGenerateVariantRecommendations:
         result = generate_variant_recommendations(vdf)
         rec = result.iloc[0]["recommendation"]
         assert "significant delay" not in rec
-        assert "reliability risk" not in rec
+        assert "SLA breach rate" not in rec
         assert "idle waiting" not in rec
 
     def test_recovery_text_when_above_baseline(self):
@@ -345,7 +386,7 @@ class TestGenerateVariantRecommendations:
         result = generate_variant_recommendations(vdf)
         # Variant B has 10h extra * 10 cases = 100h recovery
         rec_b = result[result["variant_label"] == "Variant B"].iloc[0]["recommendation"]
-        assert "recover approximately" in rec_b
+        assert "would save about" in rec_b
         assert "100" in rec_b
 
     def test_no_recovery_for_baseline(self):
@@ -360,9 +401,22 @@ class TestGenerateVariantRecommendations:
         })
         result = generate_variant_recommendations(vdf)
         rec_a = result[result["variant_label"] == "Variant A"].iloc[0]["recommendation"]
-        assert "recover approximately" not in rec_a
+        assert "would save about" not in rec_a
 
     def test_empty_input(self, empty_df):
         result = generate_variant_recommendations(empty_df)
         assert "recommendation" in result.columns
         assert result.empty
+
+
+class TestBreachRateIsCaseWeighted:
+    def test_one_off_variant_does_not_skew_the_type_breach_rate(self):
+        df = pd.DataFrame({
+            "variant_label": ["Variant A", "Variant B", "Variant C"],
+            "variant_type": ["Conformant", "Rework loop", "Rework loop"],
+            "frequency": [100, 99, 1],
+            "avg_cycle_hours": [10.0, 20.0, 20.0],
+            "sla_breach_rate": [0.10, 0.20, 1.0],
+        })
+        text = " ".join(generate_variant_insights(df))
+        assert "21% SLA breach rate" in text   # (99*0.2 + 1*1.0) / 100, not the 60% simple mean
